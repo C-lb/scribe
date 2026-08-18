@@ -82,20 +82,30 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
   }
 
   /** A rejected mutation is the user's mistake, not a server fault: 400 with
-   *  the reason, which the browser puts straight into the status line. */
+   *  the reason, which the browser puts straight into the status line. The
+   *  persistence phase is different — a write failure there is ours, not
+   *  theirs, so it gets a generic 500 with the real error only in the log. */
   async function mutate(
     res: express.Response,
     change: (file: LibraryFile) => LibraryFile | Promise<LibraryFile>,
   ): Promise<void> {
+    const ids = await listFolders(sessionsDir);
+
+    let next: LibraryFile;
     try {
-      const ids = await listFolders(sessionsDir);
-      const next = await change(await readLibrary(sessionsDir));
+      next = await change(await readLibrary(sessionsDir));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "bad request";
+      res.status(400).json({ error: message });
+      return;
+    }
+
+    try {
       await writeLibrary(sessionsDir, next, ids);
       await respondWithLibrary(res);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "bad request";
-      console.error("[scribe] library write rejected:", error);
-      res.status(400).json({ error: message });
+      console.error("[scribe] library write failed:", error);
+      res.status(500).json({ error: "internal error" });
     }
   }
 
@@ -149,7 +159,11 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
   router.patch("/api/categories/:id", async (req, res) => {
     const patch: { name?: string; order?: number } = {};
     if ("name" in req.body) patch.name = String(req.body.name);
-    if ("order" in req.body) patch.order = Number(req.body.order);
+    if ("order" in req.body) {
+      const order = Number(req.body.order);
+      if (!Number.isFinite(order)) return res.status(400).json({ error: "order must be a finite number" });
+      patch.order = order;
+    }
     await mutate(res, (file) => updateCategory(file, req.params.id, patch));
   });
 

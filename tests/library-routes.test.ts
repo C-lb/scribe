@@ -246,4 +246,36 @@ describe("library writes", () => {
       server.close();
     }
   });
+
+  it("500s a genuine write failure instead of reporting it as a 400", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+      // Make the persistence phase fail: library.json is a directory, so
+      // writeLibrary's rename-over-target cannot succeed.
+      await mkdir(path.join(dir, "library.json"), { recursive: true });
+
+      const res = await json(base, "PATCH", "/api/sessions/2026-08-18-17-03-30", { title: "Raft" });
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toBe("internal error");
+      expect(JSON.stringify(body)).not.toMatch(/ENOTDIR|EISDIR|ENOENT|rename|library\.json\.tmp/);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("400s a non-numeric category order before it reaches updateCategory", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+      const created = await (await json(base, "POST", "/api/categories", { name: "BUSI 520" })).json();
+      const id = created.categories[0].id;
+
+      const res = await json(base, "PATCH", `/api/categories/${id}`, { order: "not-a-number" });
+      expect(res.status).toBe(400);
+    } finally {
+      server.close();
+    }
+  });
 });
