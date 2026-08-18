@@ -146,38 +146,45 @@ export class Session {
   }
 
   async stop(): Promise<string> {
-    await this.queue;
-    await this.transcript.flush();
-
-    let markdown = "";
     try {
-      markdown = await this.deps.final(this.transcript.fullText());
-      await writeFile(path.join(this.dir, "summary.md"), `${markdown}\n`, "utf8");
-      this.events.publish({ type: "final", markdown });
-    } catch (error) {
-      console.error("[scribe] final summary failed:", error);
+      await this.queue;
+      await this.transcript.flush();
+
+      let markdown = "";
+      try {
+        markdown = await this.deps.final(this.transcript.fullText());
+        await writeFile(path.join(this.dir, "summary.md"), `${markdown}\n`, "utf8");
+        this.events.publish({ type: "final", markdown });
+      } catch (error) {
+        console.error("[scribe] final summary failed:", error);
+      }
+
+      // Never serialise the config object itself — it holds both API keys.
+      await writeFile(
+        path.join(this.dir, "meta.json"),
+        JSON.stringify(
+          {
+            id: this.id,
+            audioSeconds: this.audioSeconds,
+            failedChunks: this.failedChunks,
+            chunks: this.transcript.lastIndex(),
+            runningModel: this.config.runningModel,
+            finalModel: this.config.finalModel,
+            estimatedGroqCostUsd: (this.audioSeconds / 3600) * GROQ_USD_PER_AUDIO_HOUR,
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      return markdown;
+    } finally {
+      // Whatever went wrong above — a transcript flush, the meta.json write —
+      // this session has stopped. Letting the flag survive the throw would
+      // leave the drawer showing it as "Recording" for the life of the
+      // process, and a live row cannot be opened for reading.
+      this.recording = false;
     }
-
-    // Never serialise the config object itself — it holds both API keys.
-    await writeFile(
-      path.join(this.dir, "meta.json"),
-      JSON.stringify(
-        {
-          id: this.id,
-          audioSeconds: this.audioSeconds,
-          failedChunks: this.failedChunks,
-          chunks: this.transcript.lastIndex(),
-          runningModel: this.config.runningModel,
-          finalModel: this.config.finalModel,
-          estimatedGroqCostUsd: (this.audioSeconds / 3600) * GROQ_USD_PER_AUDIO_HOUR,
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-
-    this.recording = false;
-    return markdown;
   }
 }
