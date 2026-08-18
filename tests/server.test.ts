@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createApp } from "../src/server/index.js";
@@ -116,6 +116,33 @@ describe("HTTP API", () => {
     const { id } = await (await fetch(`${base}/api/sessions`, { method: "POST" })).json();
     const res = await fetch(`${base}/api/sessions/${id}/stop`, { method: "POST" });
     expect((await res.json()).markdown).toBe("# Notes");
+    server.close();
+  });
+
+  it("500s instead of crashing when session creation fails", async () => {
+    // Point SCRIBE_SESSIONS_DIR at a path whose parent segment is a regular
+    // file, so the recursive mkdir() inside Session.create() rejects with
+    // ENOTDIR. This exercises the try/catch around the async handler rather
+    // than the happy path Session.create already covers elsewhere.
+    const dir = await mkdtemp(path.join(tmpdir(), "scribe-http-"));
+    const blocker = path.join(dir, "not-a-directory");
+    await writeFile(blocker, "x");
+    const config = loadConfig({
+      GROQ_API_KEY: "gsk_test",
+      ANTHROPIC_API_KEY: "sk-ant-test",
+      SCRIBE_SESSIONS_DIR: path.join(blocker, "sessions"),
+    } as NodeJS.ProcessEnv);
+    const deps = {
+      transcribe: vi.fn(),
+      running: vi.fn(),
+      final: vi.fn(),
+    };
+    const server = createApp(config, deps).listen(0);
+    const port = (server.address() as { port: number }).port;
+    const base = `http://127.0.0.1:${port}`;
+
+    const res = await fetch(`${base}/api/sessions`, { method: "POST" });
+    expect(res.status).toBe(500);
     server.close();
   });
 

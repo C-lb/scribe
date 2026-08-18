@@ -16,9 +16,14 @@ export function createApp(config: Config, deps: SessionDeps): express.Express {
   const sessions = new Map<string, Session>();
 
   app.post("/api/sessions", async (_req, res) => {
-    const session = await Session.create(config, deps);
-    sessions.set(session.id, session);
-    res.json({ id: session.id });
+    try {
+      const session = await Session.create(config, deps);
+      sessions.set(session.id, session);
+      res.json({ id: session.id });
+    } catch (error) {
+      console.error("[scribe] failed to create session:", error);
+      res.status(500).json({ error: "internal error" });
+    }
   });
 
   app.post(
@@ -72,8 +77,13 @@ export function createApp(config: Config, deps: SessionDeps): express.Express {
   app.post("/api/sessions/:id/stop", async (req, res) => {
     const session = sessions.get(req.params.id);
     if (!session) return res.status(404).json({ error: "unknown session" });
-    const markdown = await session.stop();
-    res.json({ markdown });
+    try {
+      const markdown = await session.stop();
+      res.json({ markdown });
+    } catch (error) {
+      console.error(`[scribe] failed to stop session ${req.params.id}:`, error);
+      res.status(500).json({ error: "internal error" });
+    }
   });
 
   app.use(express.static(webRoot));
@@ -81,6 +91,16 @@ export function createApp(config: Config, deps: SessionDeps): express.Express {
 }
 
 if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1]))) {
+  // Express 4 does not catch rejections thrown by async route handlers, so an
+  // uncaught one would otherwise crash the process and take down every
+  // in-progress recording at once. Staying alive can mask a bug that a crash
+  // would have surfaced loudly, but for a lecture recorder a live process
+  // with one broken request beats a dead process that loses the recording —
+  // so we log and keep going rather than let Node's default behaviour kill us.
+  process.on("unhandledRejection", (reason) => {
+    console.error("[scribe] unhandled rejection:", reason);
+  });
+
   const config = loadConfig();
   const groq = createGroqClient(config);
   const summariser = createSummariser(config);
