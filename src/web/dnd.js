@@ -13,6 +13,36 @@ export function insertionIndex(pointerY, rects) {
 }
 
 /**
+ * The completed drag as one payload for `PUT /api/library/order`. Pure: the
+ * rendered library and the drop go in, the payload comes out, so the index
+ * arithmetic that decides where a row lands is testable without a DOM.
+ *
+ * One drag renumbers rows across two categories, so it goes as one payload and
+ * the library cannot be left half-applied. Every category is sent, not just the
+ * two the drag touched, because the server numbers each group from zero and a
+ * group left out would keep stale numbers beside fresh ones.
+ *
+ * The dragged row is filtered out of every group before it is inserted, which
+ * is what `index` is already measured against: attachDragAndDrop skips the
+ * dragged row when it reads the slots, so a downward move within one category
+ * counts the same rows on both sides and does not land one slot early.
+ */
+export function orderPayload(categories, { sessionId, categoryId, index }) {
+  const groups = categories.map((category) => ({
+    categoryId: category.id === "uncategorised" ? null : category.id,
+    sessionIds: category.sessions.map((s) => s.id).filter((id) => id !== sessionId),
+  }));
+
+  let target = groups.find((g) => g.categoryId === categoryId);
+  if (!target) {
+    target = { categoryId, sessionIds: [] };
+    groups.push(target);
+  }
+  target.sessionIds.splice(index, 0, sessionId);
+  return { groups };
+}
+
+/**
  * Native HTML5 drag events rather than pointer events: the drag image comes
  * free, the list is short, and this is a trackpad-driven desktop tool, so the
  * touch support pointer events would buy has no user here.

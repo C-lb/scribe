@@ -8,10 +8,13 @@
  * model that can drift from the folder on disk.
  */
 
-import { attachDragAndDrop } from "./dnd.js";
+import { attachDragAndDrop, orderPayload } from "./dnd.js";
 
 function formatDuration(seconds) {
   if (seconds == null) return "";
+  // Under a minute reads in seconds. Rounding a 20-second session to "0 min"
+  // says the recording holds nothing, which is the one thing it does not mean.
+  if (seconds < 60) return `${Math.max(0, Math.round(seconds))} sec`;
   const minutes = Math.round(seconds / 60);
   return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
@@ -192,27 +195,6 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
 
   /* ── Dragging ──────────────────────────────────────────────────────────── */
 
-  /**
-   * One drag renumbers rows across two categories, so it goes as one payload
-   * and the library cannot be left half-applied. Every category is sent, not
-   * just the two the drag touched, because the server numbers each group from
-   * zero and a group left out would keep stale numbers beside fresh ones.
-   */
-  function orderPayload({ sessionId, categoryId, index }) {
-    const groups = library.categories.map((category) => ({
-      categoryId: category.id === "uncategorised" ? null : category.id,
-      sessionIds: category.sessions.map((s) => s.id).filter((id) => id !== sessionId),
-    }));
-
-    let target = groups.find((g) => g.categoryId === categoryId);
-    if (!target) {
-      target = { categoryId, sessionIds: [] };
-      groups.push(target);
-    }
-    target.sessionIds.splice(index, 0, sessionId);
-    return { groups };
-  }
-
   attachDragAndDrop({
     listEl,
     onDragState: (active) => {
@@ -221,7 +203,9 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
     },
     onDrop: async (drop) => {
       try {
-        applyPayload(await api("PUT", "/api/library/order", orderPayload(drop)));
+        applyPayload(
+          await api("PUT", "/api/library/order", orderPayload(library.categories, drop)),
+        );
       } catch (error) {
         setStatus(`Could not move that session: ${error.message}`);
         // The rows are still sitting where the drag left them on screen, so

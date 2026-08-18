@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { insertionIndex } from "../src/web/dnd.js";
+import { insertionIndex, orderPayload } from "../src/web/dnd.js";
 
 // Three 40px rows starting at y=100, as a real sidebar would report them.
 const rows = [
@@ -34,5 +34,92 @@ describe("insertionIndex", () => {
 
   it("clamps a pointer above the list to the first slot", () => {
     expect(insertionIndex(-50, rows)).toBe(0);
+  });
+});
+
+// Two named categories and the Uncategorised bucket, as GET /api/library
+// returns them. Only the ids matter here.
+const sessions = (...ids) => ids.map((id) => ({ id }));
+const library = () => [
+  { id: "cat_lectures", name: "Lectures", sessions: sessions("a", "b", "c") },
+  { id: "cat_seminars", name: "Seminars", sessions: sessions("d") },
+  { id: "uncategorised", name: "Uncategorised", sessions: sessions("e") },
+];
+
+/** The ids the payload puts in one group, by category id. */
+const group = (payload, categoryId) =>
+  payload.groups.find((g) => g.categoryId === categoryId).sessionIds;
+
+describe("orderPayload", () => {
+  it("sends every category, not only the two the drag touched", () => {
+    const payload = orderPayload(library(), {
+      sessionId: "a",
+      categoryId: "cat_seminars",
+      index: 1,
+    });
+    expect(payload.groups.map((g) => g.categoryId)).toEqual([
+      "cat_lectures",
+      "cat_seminars",
+      null,
+    ]);
+  });
+
+  it("moves a session between two categories", () => {
+    const payload = orderPayload(library(), {
+      sessionId: "a",
+      categoryId: "cat_seminars",
+      index: 1,
+    });
+    expect(group(payload, "cat_lectures")).toEqual(["b", "c"]);
+    expect(group(payload, "cat_seminars")).toEqual(["d", "a"]);
+    expect(group(payload, null)).toEqual(["e"]);
+  });
+
+  // The classic off-by-one. `index` is measured against the slots with the
+  // dragged row already taken out (attachDragAndDrop filters it), so the
+  // payload has to filter it out too before inserting, or every downward move
+  // lands one row short of where the insertion line promised.
+  it("moves a session downward within one category", () => {
+    const payload = orderPayload(library(), {
+      sessionId: "a",
+      categoryId: "cat_lectures",
+      index: 2,
+    });
+    expect(group(payload, "cat_lectures")).toEqual(["b", "c", "a"]);
+  });
+
+  it("moves a session upward within one category", () => {
+    const payload = orderPayload(library(), {
+      sessionId: "c",
+      categoryId: "cat_lectures",
+      index: 0,
+    });
+    expect(group(payload, "cat_lectures")).toEqual(["c", "a", "b"]);
+  });
+
+  it("drops into a category that has nothing in it", () => {
+    const categories = library();
+    categories.push({ id: "cat_empty", name: "Empty", sessions: [] });
+    const payload = orderPayload(categories, {
+      sessionId: "a",
+      categoryId: "cat_empty",
+      index: 0,
+    });
+    expect(group(payload, "cat_empty")).toEqual(["a"]);
+    expect(group(payload, "cat_lectures")).toEqual(["b", "c"]);
+  });
+
+  // Uncategorised is only a group while something is in it, so a drop into it
+  // can name a category the rendered library has no group for at all.
+  it("makes a group for a category the library is not showing", () => {
+    const categories = library().filter((c) => c.id !== "uncategorised");
+    categories[0].sessions = sessions("a", "b", "c", "e");
+    const payload = orderPayload(categories, {
+      sessionId: "e",
+      categoryId: null,
+      index: 0,
+    });
+    expect(group(payload, null)).toEqual(["e"]);
+    expect(group(payload, "cat_lectures")).toEqual(["a", "b", "c"]);
   });
 });
