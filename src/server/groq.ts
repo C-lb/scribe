@@ -13,7 +13,20 @@ export interface TranscribeInput {
 export function createGroqClient(config: Config) {
   async function once(input: TranscribeInput): Promise<string> {
     const form = new FormData();
-    form.append("file", new Blob([input.audio], { type: "audio/wav" }), "chunk.wav");
+    form.append(
+      "file",
+      new Blob(
+        [
+          new Uint8Array(
+            input.audio.buffer as ArrayBuffer,
+            input.audio.byteOffset,
+            input.audio.byteLength,
+          ),
+        ],
+        { type: "audio/wav" },
+      ),
+      "chunk.wav",
+    );
     form.append("model", MODEL);
     form.append("response_format", "json");
     form.append("temperature", "0");
