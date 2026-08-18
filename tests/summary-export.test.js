@@ -46,6 +46,45 @@ describe("summaryToPlainText, running summaries", () => {
   it("returns an empty string for a summary with nothing in it", () => {
     expect(summaryToPlainText({ kind: "running", summary: running() })).toBe("");
   });
+
+  it("skips definition entries with neither term nor definition", () => {
+    const text = summaryToPlainText({
+      kind: "running",
+      summary: running({
+        definitions: [
+          { term: "Valid", definition: "Has both" },
+          { term: undefined, definition: undefined },
+          { term: "Another", definition: "Also valid" }
+        ]
+      })
+    });
+    expect(text).toBe(
+      [
+        "Definitions",
+        "• Valid — Has both",
+        "• Another — Also valid"
+      ].join("\n")
+    );
+  });
+
+  it("emits only term when definition is missing", () => {
+    const text = summaryToPlainText({
+      kind: "running",
+      summary: running({
+        definitions: [
+          { term: "Quorum", definition: undefined },
+          { term: undefined, definition: "A majority of nodes" }
+        ]
+      })
+    });
+    expect(text).toBe(
+      [
+        "Definitions",
+        "• Quorum",
+        "• A majority of nodes"
+      ].join("\n")
+    );
+  });
 });
 
 describe("summaryToPlainText, markdown summaries", () => {
@@ -91,6 +130,36 @@ describe("summaryToPlainText, markdown summaries", () => {
 
   it("returns an empty string for empty or whitespace-only markdown", () => {
     expect(summaryToPlainText({ kind: "markdown", markdown: "   \n\n" })).toBe("");
+  });
+
+  it("preserves underscores in identifiers and snake_case names", () => {
+    expect(summaryToPlainText({
+      kind: "markdown",
+      markdown: "the resample_buffer function and snake_case names"
+    })).toBe("the resample_buffer function and snake_case names");
+  });
+
+  it("preserves asterisks in arithmetic expressions", () => {
+    expect(summaryToPlainText({
+      kind: "markdown",
+      markdown: "the area is 2 * 3 * 4 units"
+    })).toBe("the area is 2 * 3 * 4 units");
+  });
+
+  it("still strips real emphasis markers", () => {
+    expect(summaryToPlainText({ kind: "markdown", markdown: "*emphasis*" })).toBe("emphasis");
+    expect(summaryToPlainText({ kind: "markdown", markdown: "_emphasis_" })).toBe("emphasis");
+    expect(summaryToPlainText({ kind: "markdown", markdown: "**bold**" })).toBe("bold");
+  });
+
+  it("strips trailing hashes from ATX headings", () => {
+    const markdown = "## Overview ##\n\nSome content";
+    expect(summaryToPlainText({ kind: "markdown", markdown })).toBe("Overview\n\nSome content");
+  });
+
+  it("drops horizontal rules", () => {
+    const markdown = ["Line 1", "---", "Line 2", "", "***", "", "Line 3"].join("\n");
+    expect(summaryToPlainText({ kind: "markdown", markdown })).toBe("Line 1\nLine 2\n\nLine 3");
   });
 });
 

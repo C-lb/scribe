@@ -19,8 +19,12 @@ function stripInline(text) {
     .replace(/`+/g, "")
     .replace(/\*\*(.+?)\*\*/g, "$1")
     .replace(/__(.+?)__/g, "$1")
-    .replace(/\*(.+?)\*/g, "$1")
-    .replace(/_(.+?)_/g, "$1")
+    // A single delimiter is emphasis only when it hugs its content: no space
+    // just inside, and for underscores a word boundary outside. Otherwise it
+    // is arithmetic ("2 * 3") or an identifier ("resample_buffer"), and
+    // eating it would silently corrupt the text.
+    .replace(/\*(?!\s)([^*]+?)(?<!\s)\*/g, "$1")
+    .replace(/(^|[\s(["'])_(?!\s)([^_]+?)(?<!\s)_(?=[\s).,;:!?\]"']|$)/g, "$1$2")
     .trim();
 }
 
@@ -30,7 +34,11 @@ function fromRunning(summary) {
     ["Key points", summary.keyPoints ?? []],
     [
       "Definitions",
-      (summary.definitions ?? []).map(({ term, definition }) => `${term} — ${definition}`),
+      (summary.definitions ?? []).filter(
+        ({ term, definition }) => term || definition
+      ).map(
+        ({ term, definition }) => term && definition ? `${term} — ${definition}` : (term || definition)
+      ),
     ],
     ["Flagged", summary.flagged ?? []],
     ["Open questions", summary.openQuestions ?? []],
@@ -51,7 +59,8 @@ function fromMarkdown(markdown) {
     // bullet marker at the start of a line.
     const heading = /^\s{0,3}#{1,6}\s+(.*)$/.exec(raw);
     if (heading) {
-      lines.push(stripInline(heading[1]));
+      const headingText = heading[1].replace(/\s+#+\s*$/, "");
+      lines.push(stripInline(headingText));
       continue;
     }
 
@@ -64,6 +73,7 @@ function fromMarkdown(markdown) {
     }
 
     if (/^\s*(```|~~~)/.test(raw)) continue;
+    if (/^\s*(?:[-*_]){3,}\s*$/.test(raw)) continue;
     lines.push(stripInline(raw));
   }
   return collapseBlankRuns(lines).join("\n").trim();
