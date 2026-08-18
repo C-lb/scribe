@@ -96,12 +96,18 @@ async function start() {
   sessionId = (await created.json()).id;
 
   events = new EventSource(`/api/sessions/${sessionId}/events`);
+  // This handler sits next to the capture path: a malformed or unexpected
+  // event must never be able to throw and take the page down mid-lecture.
   events.onmessage = (message) => {
-    const event = JSON.parse(message.data);
-    if (event.type === "transcript") appendLine(event.line);
-    if (event.type === "summary") renderSummary(event.summary);
-    if (event.type === "status" && event.failedChunks > 0) {
-      setStatus(`${event.failedChunks} chunk(s) failed, audio kept`);
+    try {
+      const event = JSON.parse(message.data);
+      if (event.type === "transcript") appendLine(event.line);
+      if (event.type === "summary") renderSummary(event.summary);
+      if (event.type === "status" && event.failedChunks > 0) {
+        setStatus(`${event.failedChunks} chunk(s) failed, audio kept`);
+      }
+    } catch (error) {
+      console.error("[scribe] failed to handle server event", error);
     }
   };
 
