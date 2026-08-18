@@ -1,0 +1,385 @@
+/* ============================================================================
+   Scribe — house sheet.
+
+   Palette: Silver Gelatin (cauldron). No hue anywhere except the four semantic
+   tokens; every distinction on screen is a distinction in lightness. Suits a
+   transcript reader: legible in a dim lecture hall, on a cheap projector, and
+   to a colour-blind reader, because lightness is the one channel everyone has.
+
+   Standard: anti-vibecode. One accent, flat buttons, soft diffuse shadow, no
+   gradients, no side stripes, 4px spacing scale, 12-column desktop grid, type
+   base 17px mobile / 13px desktop.
+   ============================================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+
+:root{
+  /* ── Accent: exactly one. Silver Gelatin's accent is a weight, not a hue —
+        near-black rather than pure black, because #000 glyphs on a bright
+        surface halate at small sizes. Hover steps one stop lighter. ── */
+  --accent:      #121212;   /* silver-gelatin accent      */
+  --accent-2:    #262626;   /* neutral-800, hover only    */
+  --accent-ink:  #FFFFFF;   /* silver-gelatin accent_ink  */
+
+  /* ── Neutral ramp, light-first. Surfaces sit LIGHTER than the canvas. ── */
+  --bg:          #F0F0F0;   /* neutral-100, flat canvas, no spotlight */
+  --surface-1:   #FAFAFA;   /* neutral-50,  panes                     */
+  --surface-2:   #F0F0F0;   /* neutral-100, hover / overlay           */
+  --surface-3:   #E0E0E0;   /* neutral-200, pressed                   */
+  --line:        rgba(18,18,18,.08);
+  --ink:         #141414;   /* neutral-900, primary text   */
+  --ink-2:       #5C5C5C;   /* neutral-600, secondary text */
+  --ink-3:       #808080;   /* neutral-500, non-text only  */
+
+  /* ── Semantic colour, meaning only. Unused so far: nothing in this UI is a
+        state the user can act on. Declared so a later state has one home. ── */
+  --info:#2563EB; --success:#15803D; --warn:#B45309; --danger:#B91C1C;
+
+  /* ── Soft shadow: big blur, negative spread, tinted to the canvas. ── */
+  --shadow:     0 14px 34px -18px rgba(18,18,18,.16);
+  --shadow-pop: 0 24px 50px -18px rgba(18,18,18,.28);
+  --raise:      inset 0 1px 0 rgba(255,255,255,.9), inset 0 -1px 0 rgba(18,18,18,.05);
+
+  /* ── Spacing, 4px scale ── */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+  --gap:16px;
+  --card-pad:20px;
+
+  /* ── Radii ── */
+  --r-sm:10px; --r-md:14px; --r-lg:20px;
+
+  /* ── Type ── */
+  --fs-base:17px;
+  --font:'Plus Jakarta Sans','DM Sans',-apple-system,system-ui,sans-serif;
+  --t-cap:  calc(var(--fs-base) * .80);
+  --t-body: var(--fs-base);
+  --t-lead: calc(var(--fs-base) * 1.18);
+  --t-h3:   calc(var(--fs-base) * 1.45);
+
+  --lh-h3:1.22;   --tr-h3:-.02em;
+  --lh-lead:1.45; --tr-lead:-.01em;
+  --lh-body:1.55; --tr-body:0;
+  --lh-tight:1.30; --tr-cap:.006em; --tr-eyebrow:.012em;
+  --lh-flat:1;
+
+  --measure:68ch;
+
+  /* ── Z ladder ── */
+  --z-base:0; --z-overlay:70;
+
+  /* ── Button: horizontal padding is always 2x vertical ── */
+  --btn-py:12px;
+  --btn-px:calc(var(--btn-py) * 2);
+}
+
+@media (min-width:1024px){
+  :root{ --fs-base:13px; --gap:24px; --card-pad:24px; }
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+*{ margin:0; padding:0; box-sizing:border-box; }
+html{ -webkit-text-size-adjust:100%; }
+
+/* Collision defaults: media can't break its box, long children shrink instead
+   of shoving their neighbour, long strings have an escape. */
+img,svg,video,canvas{ max-width:100%; height:auto; }
+.bar > *, .panes > *{ min-width:0; }
+
+/* The markup toggles `hidden` on the jump button. Anything given a display
+   value below would silently beat the attribute, so pin it first. */
+[hidden]{ display:none !important; }
+
+body{
+  height:100dvh;
+  display:grid;
+  grid-template-rows:auto 1fr;
+  overflow:hidden;                 /* the panes scroll, the page never does */
+  background:var(--bg);            /* flat, no gradient */
+  color:var(--ink);
+  font:500 var(--t-body)/var(--lh-body) var(--font);
+  letter-spacing:var(--tr-body);
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+}
+
+/* Quiet scrollbars — the transcript scrolls constantly and a chunky bar in the
+   corner of the eye is exactly the visual noise this standard strips out. */
+.transcript, .summary{
+  scrollbar-width:thin;
+  scrollbar-color:var(--surface-3) transparent;
+}
+
+/* ── Top bar ──────────────────────────────────────────────────────────────── */
+.bar{
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:var(--s3) var(--s4);
+  padding:var(--s4) var(--s5);
+  background:var(--surface-1);
+  box-shadow:var(--shadow);
+}
+
+/* The app title is chrome, so it takes the h3 role's size, leading and
+   tracking as a set rather than the display role. Roles are swapped whole,
+   never mixed, so the line rhythm stays intact. */
+.bar h1{
+  font-size:var(--t-h3);
+  line-height:var(--lh-h3);
+  letter-spacing:var(--tr-h3);
+  font-weight:600;
+  white-space:nowrap;
+}
+
+.bar__meta{
+  display:flex;
+  align-items:center;
+  gap:var(--s3);
+  min-width:0;
+  margin-inline-start:auto;
+}
+
+.timer{
+  font-size:var(--t-lead);
+  line-height:var(--lh-flat);
+  font-weight:600;
+  font-variant-numeric:tabular-nums;   /* digits stop twitching as it counts */
+  color:var(--ink);
+}
+
+.status{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:var(--t-cap);
+  line-height:var(--lh-tight);
+  letter-spacing:var(--tr-cap);
+  color:var(--ink-2);                  /* a note, not an alarm */
+}
+
+/* ── Record button ────────────────────────────────────────────────────────────
+   The one primary action on the view, so the one accent fill in the system.
+
+   Its two states never depend on colour to be told apart. Three signals change
+   together: the label ("Start recording" / "Stop recording"), the transport
+   glyph (a record dot becomes a stop square), and the fill's LIGHTNESS (near
+   black becomes light grey). All three survive greyscale and colour blindness.
+   Flat: no gradient, no specular top edge, no side stripe.                    */
+.record{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:.6em;
+  padding:var(--btn-py) var(--btn-px);
+  border:1px solid transparent;
+  border-radius:var(--r-md);
+  font:600 var(--t-body)/var(--lh-flat) var(--font);
+  white-space:nowrap;                  /* one line, always */
+  color:var(--accent-ink);
+  background:var(--accent);
+  box-shadow:var(--shadow);
+  cursor:pointer;
+  -webkit-tap-highlight-color:transparent;
+  transition:background .18s ease, color .18s ease, transform .12s ease,
+             box-shadow .2s ease, opacity .2s ease;
+}
+
+/* The transport glyph. Filled circle at rest, rounded square while recording —
+   the shape carries the state on its own. */
+.record::before{
+  content:"";
+  width:.62em;
+  height:.62em;
+  flex:none;
+  border-radius:50%;
+  background:currentColor;
+  transition:border-radius .18s ease;
+}
+
+.record:hover{ background:var(--accent-2); }
+.record:active{ transform:translateY(1px) scale(.985); box-shadow:none; }
+.record:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+.record:disabled{ opacity:.4; pointer-events:none; }
+
+/* `data-state` is absent until the first click, so idle is the base state and
+   this rule is the only override. */
+.record[data-state="recording"]{
+  color:var(--ink);
+  background:var(--surface-2);
+  border-color:var(--line);            /* dim hairline, no outline weight */
+}
+.record[data-state="recording"]:hover{ background:var(--surface-3); }
+.record[data-state="recording"]::before{ border-radius:3px; }
+
+/* ── Panes ────────────────────────────────────────────────────────────────────
+   Wide: side by side on the 12-column grid, transcript 7 and summary 5, because
+   the transcript is the thing being read and the summary is the thing being
+   glanced at. Narrow: one column, two rows.
+
+   Either way `.panes` is a fixed-height grid track with `min-height:0`, so the
+   panes cannot grow the page. Their inner scrollers take the overflow.        */
+.panes{
+  display:grid;
+  gap:var(--gap);
+  grid-template-columns:1fr;
+  grid-auto-rows:1fr;
+  min-height:0;
+  padding:var(--gap) var(--s5) var(--s5);
+}
+
+@media (min-width:1024px){
+  .panes{
+    grid-template-columns:repeat(12,1fr);
+    grid-auto-rows:auto;
+  }
+  .pane:first-child{ grid-column:span 7; }
+  .pane:last-child{ grid-column:span 5; }
+}
+
+.pane{
+  position:relative;                   /* containing block for the jump button */
+  display:flex;
+  flex-direction:column;
+  gap:var(--s3);
+  min-height:0;                        /* without this the scroller never scrolls */
+  padding:var(--card-pad);             /* ONE level of padding */
+  border-radius:var(--r-lg);
+  background:var(--surface-1);
+  box-shadow:var(--raise), var(--shadow);
+}
+
+/* Pane headings are labels for the content under them, so they take the
+   eyebrow role: small, quiet, sentence case. Never all caps. */
+.pane > h2{
+  font-size:var(--t-cap);
+  font-weight:600;
+  line-height:var(--lh-tight);
+  letter-spacing:var(--tr-eyebrow);
+  color:var(--ink-2);
+}
+
+/* ── Transcript ───────────────────────────────────────────────────────────────
+   Scrolls inside itself. `scroll-behavior` stays at the browser default on
+   purpose: app.js pins to the bottom by assigning `scrollTop` directly, and a
+   smooth animation would fire `scroll` events on the way there, unpinning the
+   reader the instant a new line arrives.                                      */
+.transcript{
+  flex:1;
+  min-height:0;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  padding-inline-end:var(--s2);        /* keeps text off the scrollbar */
+}
+
+.line{
+  max-width:var(--measure);            /* running text stops near 68 characters */
+  overflow-wrap:anywhere;              /* a long token can't open the column */
+  font-size:var(--t-lead);
+  line-height:var(--lh-lead);          /* one leading for the whole column */
+  letter-spacing:var(--tr-lead);
+}
+.line + .line{ margin-top:var(--s3); }
+
+.line__time{
+  display:inline-block;
+  min-width:3.6em;                     /* min, never fixed — 100:00 still fits */
+  font-size:var(--t-cap);
+  font-variant-numeric:tabular-nums;
+  font-weight:600;
+  color:var(--ink-2);
+  user-select:none;                    /* copying the transcript stays clean */
+}
+
+/* A chunk that failed to transcribe is not something the reader can act on, so
+   it must not read as an error. It steps back one ink stop and goes italic:
+   quieter than the surrounding text, still comfortably legible at 7:1, and
+   carrying no semantic colour at all. */
+.line--failed{
+  color:var(--ink-2);
+  font-style:italic;
+}
+
+/* ── Jump to live ─────────────────────────────────────────────────────────────
+   Appears only when the reader has scrolled away from the bottom. It floats
+   above the transcript, so it takes one surface step up plus the deeper shadow
+   — the same ladder as any overlay. */
+.jump{
+  position:absolute;
+  bottom:var(--s4);
+  left:50%;
+  transform:translateX(-50%);
+  z-index:var(--z-overlay);
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  padding:9px 18px;                    /* small tier, 2:1 horizontal to vertical */
+  border:1px solid var(--line);
+  border-radius:var(--r-sm);           /* small buttons are 10px */
+  font:600 var(--t-cap)/var(--lh-flat) var(--font);
+  white-space:nowrap;
+  color:var(--ink);
+  background:var(--surface-2);
+  box-shadow:var(--shadow-pop);
+  cursor:pointer;
+  transition:background .18s ease, transform .12s ease, box-shadow .2s ease;
+}
+.jump:hover{ background:var(--surface-3); }
+.jump:active{ transform:translateX(-50%) translateY(1px); box-shadow:var(--shadow); }
+.jump:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+/* ── Summary ──────────────────────────────────────────────────────────────── */
+.summary{
+  flex:1;
+  min-height:0;
+  overflow-y:auto;
+  padding-inline-end:var(--s2);
+}
+.summary > * + *{ margin-top:var(--s4); }
+.summary h3 + ul,
+.summary h3 + dl{ margin-top:var(--s3); }
+
+.summary h3{
+  font-size:var(--t-h3);
+  font-weight:600;
+  line-height:var(--lh-h3);
+  letter-spacing:var(--tr-h3);
+}
+
+.summary ul{
+  padding-inline-start:1.15em;
+  max-width:var(--measure);
+}
+.summary li{ overflow-wrap:anywhere; }
+.summary li + li{ margin-top:var(--s2); }
+.summary li::marker{ color:var(--ink-3); }
+
+.summary dl{ max-width:var(--measure); }
+.summary dt{ font-weight:700; overflow-wrap:anywhere; }
+.summary dd{ margin-top:var(--s2); color:var(--ink-2); overflow-wrap:anywhere; }
+.summary dd + dt{ margin-top:var(--s4); }
+
+.empty{ color:var(--ink-2); max-width:var(--measure); }
+
+/* The finished markdown. The one inset panel allowed inside a pane, because it
+   is a genuinely different surface: a document, not interface. Sans face and
+   body leading keep it in the same type system as everything else. */
+.final{
+  padding:var(--s4);
+  border-radius:var(--r-md);
+  background:var(--bg);
+  font:500 var(--t-body)/var(--lh-body) var(--font);
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+}
+
+/* ── Narrow screens get more vertical air, not a shrunken desktop ─────────── */
+@media (max-width:1023px){
+  .bar{ padding:var(--s5) var(--s4); }
+  .panes{ padding:var(--s4); }
+  .record{ --btn-py:14px; }
+}
+
+@media (prefers-reduced-motion:reduce){
+  *{ animation-duration:.01ms !important; transition:none !important; }
+}

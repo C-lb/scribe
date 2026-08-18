@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Scribe</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <h1>Scribe</h1>
+      <div class="bar__meta">
+        <span id="timer" class="timer">00:00</span>
+        <span id="status" class="status" aria-live="polite"></span>
+      </div>
+      <button id="record" class="record" type="button">Start recording</button>
+    </header>
+
+    <main class="panes">
+      <section class="pane" aria-labelledby="transcript-heading">
+        <h2 id="transcript-heading">Transcript</h2>
+        <div id="transcript" class="transcript" role="log" aria-live="polite"></div>
+        <button id="jump" class="jump" type="button" hidden>Jump to live</button>
+      </section>
+
+      <section class="pane" aria-labelledby="summary-heading">
+        <h2 id="summary-heading">Summary</h2>
+        <div id="summary" class="summary">
+          <p class="empty">The first summary appears after about five minutes.</p>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
