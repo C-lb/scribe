@@ -418,3 +418,143 @@ body{
 @media (prefers-reduced-motion:reduce){
   *{ animation-duration:.01ms !important; transition:none !important; }
 }
+
+/* ── Sessions drawer ──────────────────────────────────────────────────────────
+   One grid, two columns. A closed drawer is display:none, so the auto track
+   collapses to zero and the panes get the whole width back. Extending the
+   existing body grid keeps one layout system rather than two.               */
+body{ grid-template-columns:auto 1fr; }
+.bar{ grid-column:1 / -1; grid-row:1; }
+
+/* Placed explicitly rather than auto-flowed: a hidden drawer is not a grid
+   item at all, and without this the panes would fall into the auto column
+   meant for the drawer and leave the 1fr column empty. */
+.drawer{ grid-column:1; grid-row:2; }
+.panes{ grid-column:2; grid-row:2; }
+
+/* Square icon button, same flat treatment and hairline as the ghost tier. */
+.hamburger{
+  display:grid;
+  place-items:center;
+  flex:none;
+  width:36px;
+  height:36px;
+  border:1px solid var(--line);
+  border-radius:var(--r-sm);
+  background:var(--surface-1);
+  color:var(--ink-2);
+  cursor:pointer;
+  transition:background .18s ease, color .18s ease;
+}
+.hamburger:hover{ background:var(--surface-2); color:var(--ink); }
+.hamburger:active{ background:var(--surface-3); }
+.hamburger:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+/* Inline on a wide window, overlaid below 900px so the transcript is never
+   squeezed into an unreadable column. */
+.drawer{
+  display:none;
+  flex-direction:column;
+  justify-content:space-between;
+  gap:var(--s4);
+  width:264px;
+  min-height:0;
+  padding:var(--s4);
+  background:var(--surface-1);
+  border-right:1px solid var(--line);
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-width:thin;
+  scrollbar-color:var(--surface-3) transparent;
+}
+body[data-sidebar="open"] .drawer{ display:flex; }
+
+.drawer__list{ display:flex; flex-direction:column; gap:var(--s5); }
+.drawer__foot{ padding-top:var(--s4); border-top:1px solid var(--line); }
+.drawer__foot .ghost{ width:100%; }
+
+/* Headings are labels for the rows under them, so they take the same quiet
+   eyebrow role as the pane headings. Sentence case: the name is the user's. */
+.cat__name{
+  font:600 var(--t-cap)/var(--lh-tight) var(--font);
+  letter-spacing:var(--tr-eyebrow);
+  color:var(--ink-2);
+  margin:0 0 var(--s2);
+  overflow-wrap:anywhere;
+}
+
+.cat__rows{ display:flex; flex-direction:column; gap:var(--s1); }
+
+.row{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:var(--s2);
+  width:100%;
+  padding:var(--s2) var(--s3);
+  text-align:left;
+  border-radius:var(--r-sm);
+  background:transparent;
+  color:var(--ink);
+  cursor:pointer;
+  transition:background .18s ease;
+}
+.row:hover{ background:var(--surface-2); }
+.row:active{ background:var(--surface-3); }
+.row:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+.row[data-open="yes"]{ background:var(--surface-3); }
+
+/* The name takes the room and truncates; the duration never gets squeezed. */
+.row__name{
+  min-width:0;
+  flex:1;
+  font:500 var(--t-cap)/var(--lh-tight) var(--font);
+  letter-spacing:var(--tr-cap);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+/* A recording row says "Recording" in a heavier, darker cut rather than a
+   colour, so it survives greyscale the same way the record button does. */
+.row__meta{
+  flex:none;
+  font:400 var(--t-cap)/var(--lh-tight) var(--font);
+  letter-spacing:var(--tr-cap);
+  color:var(--ink-2);
+  white-space:nowrap;
+}
+.row[data-live="yes"] .row__meta{ font-weight:600; color:var(--ink); }
+
+.inline-edit{
+  width:100%;
+  min-width:0;
+  padding:6px var(--s2);
+  font:500 var(--t-cap)/var(--lh-tight) var(--font);
+  letter-spacing:var(--tr-cap);
+  border:1px solid var(--line);
+  border-radius:var(--r-sm);
+  background:var(--surface-1);
+  color:var(--ink);
+}
+.inline-edit:focus{ outline:2px solid var(--accent); outline-offset:1px; }
+
+.scrim{ display:none; }
+
+@media (max-width:900px){
+  /* Above the jump button, which sits on the same overlay rung inside the
+     transcript pane, so the two can never paint into each other. */
+  .drawer{
+    position:fixed;
+    inset:0 auto 0 0;
+    z-index:calc(var(--z-overlay) + 2);
+    box-shadow:var(--shadow-pop);
+  }
+  body[data-sidebar="open"] .scrim{
+    display:block;
+    position:fixed;
+    inset:0;
+    z-index:calc(var(--z-overlay) + 1);
+    background:rgba(18,18,18,.28);
+  }
+}
