@@ -205,4 +205,158 @@ describe("mergeLibrary", () => {
     );
     expect(view.categories.map((c) => c.id)).toEqual(["cat_a"]);
   });
+
+  describe("mergeLibrary", () => {
+    it("mixes ordered and unordered rows in a bucket: ordered first by order, unordered last", () => {
+      // A category holding two sessions with explicit order (0, 1) and one without.
+      // The ordered ones should come first in their order, and the unordered one last.
+      const view = mergeLibrary(
+        {
+          version: 1,
+          categories: [{ id: "cat_a", name: "BUSI 520", order: 0 }],
+          entries: {
+            "2026-08-18-17-03-30": { categoryId: "cat_a", order: 0 },
+            "2026-08-17-17-03-30": { categoryId: "cat_a", order: 1 },
+            "2026-08-16-17-03-30": { categoryId: "cat_a" }, // no order
+          },
+        },
+        [
+          folder("2026-08-18-17-03-30"),
+          folder("2026-08-17-17-03-30"),
+          folder("2026-08-16-17-03-30"),
+        ],
+        null,
+      );
+      expect(view.categories[0].sessions.map((s) => s.id)).toEqual([
+        "2026-08-18-17-03-30",
+        "2026-08-17-17-03-30",
+        "2026-08-16-17-03-30",
+      ]);
+    });
+  });
+});
+
+import {
+  setEntry, createCategory, updateCategory, deleteCategory, applyOrder, newCategoryId,
+} from "../src/server/library.js";
+
+const base = () => ({
+  version: 1 as const,
+  categories: [{ id: "cat_a", name: "BUSI 520", order: 0 }],
+  entries: { "2026-08-18-17-03-30": { title: "Raft", categoryId: "cat_a", order: 0 } },
+});
+
+describe("setEntry", () => {
+  it("sets a title", () => {
+    const file = setEntry(base(), "2026-08-17-17-03-30", { title: "Paxos" });
+    expect(file.entries["2026-08-17-17-03-30"].title).toBe("Paxos");
+  });
+
+  it("clearing a title removes it so the date default returns", () => {
+    const file = setEntry(base(), "2026-08-18-17-03-30", { title: "   " });
+    expect(file.entries["2026-08-18-17-03-30"].title).toBeUndefined();
+  });
+
+  it("a null categoryId moves the session to Uncategorised", () => {
+    const file = setEntry(base(), "2026-08-18-17-03-30", { categoryId: null });
+    expect(file.entries["2026-08-18-17-03-30"].categoryId).toBeUndefined();
+  });
+
+  it("does not mutate the input", () => {
+    const input = base();
+    setEntry(input, "2026-08-18-17-03-30", { title: "changed" });
+    expect(input.entries["2026-08-18-17-03-30"].title).toBe("Raft");
+  });
+
+  it("rejects a categoryId that does not exist", () => {
+    expect(() => setEntry(base(), "2026-08-18-17-03-30", { categoryId: "cat_nope" })).toThrow(
+      /unknown category/,
+    );
+  });
+});
+
+describe("categories", () => {
+  it("creates one at the end of the order", () => {
+    const file = createCategory(base(), "BUSI 530", "cat_b");
+    expect(file.categories.map((c) => [c.id, c.order])).toEqual([
+      ["cat_a", 0],
+      ["cat_b", 1],
+    ]);
+  });
+
+  it("rejects an empty name", () => {
+    expect(() => createCategory(base(), "  ", "cat_b")).toThrow(/name/);
+  });
+
+  it("renames one", () => {
+    const file = updateCategory(base(), "cat_a", { name: "Distributed systems" });
+    expect(file.categories[0].name).toBe("Distributed systems");
+  });
+
+  it("reorders one", () => {
+    const two = createCategory(base(), "BUSI 530", "cat_b");
+    const file = updateCategory(two, "cat_b", { order: 0 });
+    expect(file.categories.find((c) => c.id === "cat_b")!.order).toBe(0);
+  });
+
+  it("deleting one leaves its sessions alone but unfiled", () => {
+    const file = deleteCategory(base(), "cat_a");
+    expect(file.categories).toEqual([]);
+    expect(file.entries["2026-08-18-17-03-30"]).toBeDefined();
+    expect(file.entries["2026-08-18-17-03-30"].categoryId).toBeUndefined();
+  });
+
+  it("throws on an unknown category", () => {
+    expect(() => deleteCategory(base(), "cat_nope")).toThrow(/unknown category/);
+  });
+
+  it("mints ids that fit the cat_ shape", () => {
+    expect(newCategoryId(() => 0.5)).toMatch(/^cat_[a-z0-9]{6}$/);
+  });
+});
+
+describe("applyOrder", () => {
+  it("applies a drag across two categories in one payload", () => {
+    let file = createCategory(base(), "BUSI 530", "cat_b");
+    file = setEntry(file, "2026-08-17-17-03-30", { title: "Paxos", categoryId: "cat_a" });
+
+    file = applyOrder(file, {
+      groups: [
+        { categoryId: "cat_a", sessionIds: ["2026-08-17-17-03-30"] },
+        { categoryId: "cat_b", sessionIds: ["2026-08-18-17-03-30"] },
+      ],
+    });
+
+    expect(file.entries["2026-08-17-17-03-30"]).toMatchObject({ categoryId: "cat_a", order: 0 });
+    expect(file.entries["2026-08-18-17-03-30"]).toMatchObject({ categoryId: "cat_b", order: 0 });
+  });
+
+  it("a null categoryId group unfiles its sessions and still orders them", () => {
+    const file = applyOrder(base(), {
+      groups: [{ categoryId: null, sessionIds: ["2026-08-18-17-03-30"] }],
+    });
+    expect(file.entries["2026-08-18-17-03-30"].categoryId).toBeUndefined();
+    expect(file.entries["2026-08-18-17-03-30"].order).toBe(0);
+  });
+
+  it("keeps the title when a session moves", () => {
+    const file = applyOrder(base(), {
+      groups: [{ categoryId: null, sessionIds: ["2026-08-18-17-03-30"] }],
+    });
+    expect(file.entries["2026-08-18-17-03-30"].title).toBe("Raft");
+  });
+
+  it("rejects the whole payload if any category is unknown, changing nothing", () => {
+    const input = base();
+    expect(() =>
+      applyOrder(input, { groups: [{ categoryId: "cat_nope", sessionIds: [] }] }),
+    ).toThrow(/unknown category/);
+    expect(input.entries["2026-08-18-17-03-30"].categoryId).toBe("cat_a");
+  });
+
+  it("rejects a session id outside the id shape", () => {
+    expect(() =>
+      applyOrder(base(), { groups: [{ categoryId: null, sessionIds: ["../etc/passwd"] }] }),
+    ).toThrow(/session id/);
+  });
 });

@@ -185,3 +185,125 @@ export function mergeLibrary(
 
   return { categories };
 }
+
+function clone(file: LibraryFile): LibraryFile {
+  return {
+    version: 1,
+    categories: file.categories.map((c) => ({ ...c })),
+    entries: Object.fromEntries(Object.entries(file.entries).map(([id, e]) => [id, { ...e }])),
+  };
+}
+
+function requireCategory(file: LibraryFile, id: string): void {
+  if (!file.categories.some((c) => c.id === id)) {
+    throw new Error(`unknown category: ${id}`);
+  }
+}
+
+export function newCategoryId(random: () => number = Math.random): string {
+  return `cat_${random().toString(36).slice(2, 8).padEnd(6, "0")}`;
+}
+
+/**
+ * Every mutation returns a new file rather than editing in place, so a
+ * rejected payload cannot leave the in-memory copy half-applied.
+ */
+export function setEntry(
+  file: LibraryFile,
+  id: string,
+  patch: { title?: string | null; categoryId?: string | null },
+): LibraryFile {
+  if (!isSessionId(id)) throw new Error(`invalid session id: ${id}`);
+  const next = clone(file);
+  const entry = next.entries[id] ?? {};
+
+  if (patch.title !== undefined) {
+    const title = (patch.title ?? "").trim();
+    if (title) entry.title = title;
+    else delete entry.title;
+  }
+
+  if (patch.categoryId !== undefined) {
+    if (patch.categoryId === null) {
+      delete entry.categoryId;
+    } else {
+      requireCategory(next, patch.categoryId);
+      entry.categoryId = patch.categoryId;
+    }
+  }
+
+  next.entries[id] = entry;
+  return next;
+}
+
+export function createCategory(file: LibraryFile, name: string, id: string): LibraryFile {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error("a category name cannot be empty");
+  const next = clone(file);
+  next.categories.push({ id, name: trimmed, order: next.categories.length });
+  return next;
+}
+
+export function updateCategory(
+  file: LibraryFile,
+  id: string,
+  patch: { name?: string; order?: number },
+): LibraryFile {
+  requireCategory(file, id);
+  const next = clone(file);
+  const category = next.categories.find((c) => c.id === id)!;
+  if (patch.name !== undefined) {
+    const trimmed = patch.name.trim();
+    if (!trimmed) throw new Error("a category name cannot be empty");
+    category.name = trimmed;
+  }
+  if (patch.order !== undefined) {
+    if (!Number.isInteger(patch.order)) throw new Error("order must be an integer");
+    category.order = patch.order;
+  }
+  return next;
+}
+
+/** Never touches a session folder. Its sessions fall back to Uncategorised. */
+export function deleteCategory(file: LibraryFile, id: string): LibraryFile {
+  requireCategory(file, id);
+  const next = clone(file);
+  next.categories = next.categories
+    .filter((c) => c.id !== id)
+    .sort((a, b) => a.order - b.order)
+    .map((c, index) => ({ ...c, order: index }));
+  for (const entry of Object.values(next.entries)) {
+    if (entry.categoryId === id) delete entry.categoryId;
+  }
+  return next;
+}
+
+export interface OrderPayload {
+  groups: Array<{ categoryId: string | null; sessionIds: string[] }>;
+}
+
+/**
+ * One drag renumbers several rows across two categories, so it arrives as one
+ * payload. Validating every group before writing any of it means the library
+ * cannot be left half-applied.
+ */
+export function applyOrder(file: LibraryFile, payload: OrderPayload): LibraryFile {
+  for (const group of payload.groups) {
+    if (group.categoryId !== null) requireCategory(file, group.categoryId);
+    for (const id of group.sessionIds) {
+      if (!isSessionId(id)) throw new Error(`invalid session id: ${id}`);
+    }
+  }
+
+  const next = clone(file);
+  for (const group of payload.groups) {
+    group.sessionIds.forEach((id, index) => {
+      const entry = next.entries[id] ?? {};
+      if (group.categoryId === null) delete entry.categoryId;
+      else entry.categoryId = group.categoryId;
+      entry.order = index;
+      next.entries[id] = entry;
+    });
+  }
+  return next;
+}
