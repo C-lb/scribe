@@ -1,3 +1,6 @@
+import { readFile, writeFile, rename, unlink, mkdir, copyFile, readdir, access } from "node:fs/promises";
+import path from "node:path";
+
 /** Category names, titles, and order. Never a record of what was recorded. */
 export interface LibraryCategory {
   id: string;
@@ -43,9 +46,6 @@ export function defaultTitle(id: string): string {
 export function emptyLibrary(): LibraryFile {
   return { version: 1, categories: [], entries: {} };
 }
-
-import { readFile, writeFile, rename, unlink, mkdir } from "node:fs/promises";
-import path from "node:path";
 
 export function libraryPath(sessionsDir: string): string {
   return path.join(sessionsDir, "library.json");
@@ -306,4 +306,73 @@ export function applyOrder(file: LibraryFile, payload: OrderPayload): LibraryFil
     });
   }
   return next;
+}
+
+/**
+ * Generous: each file is a few kilobytes. The cap exists only so a machine
+ * left running for months does not accumulate without limit.
+ */
+export const ARCHIVE_LIMIT = 30;
+
+export function backupsDir(sessionsDir: string): string {
+  return path.join(sessionsDir, ".library-backups");
+}
+
+export function rollbackPath(sessionsDir: string): string {
+  return path.join(backupsDir(sessionsDir), "rollback.json");
+}
+
+function archiveDir(sessionsDir: string): string {
+  return path.join(backupsDir(sessionsDir), "archive");
+}
+
+async function exists(target: string): Promise<boolean> {
+  try {
+    await access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function archive(sessionsDir: string, source: string, stamp: string): Promise<void> {
+  const dir = archiveDir(sessionsDir);
+  await mkdir(dir, { recursive: true });
+  await copyFile(source, path.join(dir, `library-${stamp}.json`));
+
+  const names = (await readdir(dir)).filter((n) => n.startsWith("library-")).sort();
+  for (const name of names.slice(0, Math.max(0, names.length - ARCHIVE_LIMIT))) {
+    await unlink(path.join(dir, name)).catch(() => {});
+  }
+}
+
+/**
+ * Taken once, at server start. The known limitation is that a long-running
+ * Scribe has an old restore point; the archive is what makes intermediate
+ * states recoverable by hand.
+ */
+export async function snapshotLibrary(sessionsDir: string, stamp: string): Promise<boolean> {
+  const current = libraryPath(sessionsDir);
+  if (!(await exists(current))) return false;
+
+  await mkdir(backupsDir(sessionsDir), { recursive: true });
+  const rollback = rollbackPath(sessionsDir);
+  if (await exists(rollback)) await archive(sessionsDir, rollback, stamp);
+  await copyFile(current, rollback);
+  return true;
+}
+
+export async function hasRollback(sessionsDir: string): Promise<boolean> {
+  return exists(rollbackPath(sessionsDir));
+}
+
+/** Archives the current file first, so a restore can be undone by hand. */
+export async function restoreLibrary(sessionsDir: string, stamp: string): Promise<boolean> {
+  const rollback = rollbackPath(sessionsDir);
+  if (!(await exists(rollback))) return false;
+
+  const current = libraryPath(sessionsDir);
+  if (await exists(current)) await archive(sessionsDir, current, stamp);
+  await copyFile(rollback, current);
+  return true;
 }

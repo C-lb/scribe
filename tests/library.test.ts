@@ -360,3 +360,75 @@ describe("applyOrder", () => {
     ).toThrow(/session id/);
   });
 });
+
+import {
+  snapshotLibrary, restoreLibrary, hasRollback, rollbackPath, backupsDir, ARCHIVE_LIMIT,
+} from "../src/server/library.js";
+
+const named = (name: string) => ({ version: 1 as const, categories: [{ id: "cat_a", name, order: 0 }], entries: {} });
+
+describe("rollback", () => {
+  it("does nothing and reports false when there is no library yet", async () => {
+    const d = await dir();
+    expect(await snapshotLibrary(d, "stamp-1")).toBe(false);
+    expect(await hasRollback(d)).toBe(false);
+  });
+
+  it("snapshots the library as it was when Scribe opened", async () => {
+    const d = await dir();
+    await writeLibrary(d, named("at open"), []);
+    expect(await snapshotLibrary(d, "stamp-1")).toBe(true);
+
+    await writeLibrary(d, named("changed since"), []);
+    const snapshot = JSON.parse(await readFile(rollbackPath(d), "utf8"));
+    expect(snapshot.categories[0].name).toBe("at open");
+  });
+
+  it("archives the previous snapshot before overwriting it", async () => {
+    const d = await dir();
+    await writeLibrary(d, named("first open"), []);
+    await snapshotLibrary(d, "stamp-1");
+    await writeLibrary(d, named("second open"), []);
+    await snapshotLibrary(d, "stamp-2");
+
+    const archived = await readdir(path.join(backupsDir(d), "archive"));
+    expect(archived).toEqual(["library-stamp-2.json"]);
+    const previous = JSON.parse(
+      await readFile(path.join(backupsDir(d), "archive", "library-stamp-2.json"), "utf8"),
+    );
+    expect(previous.categories[0].name).toBe("first open");
+  });
+
+  it("prunes the archive to the most recent 30", async () => {
+    const d = await dir();
+    await writeLibrary(d, named("v0"), []);
+    for (let i = 0; i <= ARCHIVE_LIMIT + 3; i += 1) {
+      await snapshotLibrary(d, `stamp-${String(i).padStart(3, "0")}`);
+      await writeLibrary(d, named(`v${i + 1}`), []);
+    }
+    const archived = await readdir(path.join(backupsDir(d), "archive"));
+    expect(archived).toHaveLength(ARCHIVE_LIMIT);
+    expect(archived.sort()[0]).not.toBe("library-stamp-000.json");
+  });
+
+  it("restores the snapshot after archiving the current file, so a restore is undoable", async () => {
+    const d = await dir();
+    await writeLibrary(d, named("at open"), []);
+    await snapshotLibrary(d, "stamp-1");
+    await writeLibrary(d, named("a mess"), []);
+
+    expect(await restoreLibrary(d, "stamp-restore")).toBe(true);
+    expect((await readLibrary(d)).categories[0].name).toBe("at open");
+
+    const archived = await readdir(path.join(backupsDir(d), "archive"));
+    expect(archived).toContain("library-stamp-restore.json");
+    const undo = JSON.parse(
+      await readFile(path.join(backupsDir(d), "archive", "library-stamp-restore.json"), "utf8"),
+    );
+    expect(undo.categories[0].name).toBe("a mess");
+  });
+
+  it("reports false from restore when there is no snapshot", async () => {
+    expect(await restoreLibrary(await dir(), "stamp-1")).toBe(false);
+  });
+});
