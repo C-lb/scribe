@@ -21,6 +21,13 @@ let pinnedToLive = true;
 let displayedSummary = null; // { kind: "running", summary } | { kind: "markdown", markdown }
 let displayedTitle = "Summary";
 let recording = false;
+// True once a session has actually begun in this page load. Distinguishes
+// "nothing has happened yet" (page load: stay quiet, the summary pane's own
+// placeholder already explains the wait) from "a session ran and produced no
+// summary" (say so). Never true before start() runs, never reset to false
+// except when a start() attempt itself fails, in which case no session ever
+// really began.
+let started = false;
 
 const exportControls = createExportControls({
   root: document.getElementById("summary-actions"),
@@ -29,6 +36,7 @@ const exportControls = createExportControls({
     title: displayedTitle,
     sessionId,
     recording,
+    started,
   }),
   setStatus,
 });
@@ -113,11 +121,13 @@ function setStatus(text) {
 
 async function start() {
   // A stale final summary from a previous session in the same page load must
-  // not stay exportable once a new recording begins. `recording` flips here
-  // too, so the disabled reason reads "first summary in five minutes" for
-  // the whole gap before mic permission resolves, not the stale "failed".
+  // not stay exportable once a new recording begins. `recording` and
+  // `started` flip here too, so the disabled reason reads "first summary in
+  // five minutes" for the whole gap before mic permission resolves, not the
+  // stale "failed" (or, on the very first recording, the page-load silence).
   displayedSummary = null;
   recording = true;
+  started = true;
   exportControls.refresh();
 
   const created = await fetch("/api/sessions", { method: "POST" });
@@ -204,12 +214,14 @@ recordButton.addEventListener("click", () => {
     console.error(error);
     setStatus(`Something went wrong: ${error.message}`);
     recordButton.disabled = false;
-    // start() flips `recording` before mic permission is even resolved, so a
-    // rejected start() (permission denied, session creation failed, ...)
-    // must flip it back rather than leaving the export controls reading
-    // "recording" for a session that never began.
-    if (wasStarting && recording) {
+    // start() flips `recording` and `started` before mic permission is even
+    // resolved, so a rejected start() (permission denied, session creation
+    // failed, ...) must flip both back rather than leaving the export
+    // controls stuck reading "recording", or later "failed", for a session
+    // that never actually began.
+    if (wasStarting && (recording || started)) {
       recording = false;
+      started = false;
       exportControls.refresh();
     }
   });

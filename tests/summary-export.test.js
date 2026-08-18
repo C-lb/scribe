@@ -185,21 +185,28 @@ describe("sanitiseFilename", () => {
 
 describe("exportState", () => {
   it("is disabled and explains itself while the first summary is still coming", () => {
-    expect(exportState({ input: null, recording: true })).toEqual({
+    expect(exportState({ input: null, recording: true, started: true })).toEqual({
       enabled: false,
       reason: "The first summary appears after about five minutes.",
     });
   });
 
   it("is disabled and honest when a finished session has no summary at all", () => {
-    expect(exportState({ input: null, recording: false })).toEqual({
+    expect(exportState({ input: null, recording: false, started: true })).toEqual({
       enabled: false,
       reason: "The summary for this session failed, so there is nothing to send.",
     });
   });
 
+  it("is disabled but says nothing at page load, before any session has started", () => {
+    expect(exportState({ input: null, recording: false, started: false })).toEqual({
+      enabled: false,
+      reason: "",
+    });
+  });
+
   it("is enabled once there is any summary", () => {
-    expect(exportState({ input: { kind: "markdown", markdown: "# x" }, recording: false })).toEqual({
+    expect(exportState({ input: { kind: "markdown", markdown: "# x" }, recording: false, started: true })).toEqual({
       enabled: true,
       reason: "",
     });

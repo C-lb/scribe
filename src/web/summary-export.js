@@ -96,14 +96,22 @@ export function sanitiseFilename(title, fallbackId) {
   return slug || fallbackId;
 }
 
-/** No dead buttons: either the control works, or it says why it does not. */
-export function exportState({ input, recording }) {
+/**
+ * No dead buttons: either the control works, or it says why it does not —
+ * except at page load, before any recording has started, where the summary
+ * pane's own placeholder already says the first summary takes about five
+ * minutes. Repeating that is fine; inventing a failure that never happened
+ * is not, so the reason stays empty until a session actually exists.
+ */
+export function exportState({ input, recording, started }) {
   if (input) return { enabled: true, reason: "" };
+  if (recording) {
+    return { enabled: false, reason: "The first summary appears after about five minutes." };
+  }
+  if (!started) return { enabled: false, reason: "" };
   return {
     enabled: false,
-    reason: recording
-      ? "The first summary appears after about five minutes."
-      : "The summary for this session failed, so there is nothing to send.",
+    reason: "The summary for this session failed, so there is nothing to send.",
   };
 }
 
