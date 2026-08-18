@@ -6,6 +6,8 @@ import { loadConfig, type Config } from "./config.js";
 import { Session, type SessionDeps } from "./session.js";
 import { createGroqClient } from "./groq.js";
 import { createSummariser } from "./claude.js";
+import { createLibraryRouter } from "./library-routes.js";
+import { snapshotLibrary } from "./library.js";
 
 // __dirname does not exist in ES modules.
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -86,6 +88,17 @@ export function createApp(config: Config, deps: SessionDeps): express.Express {
     }
   });
 
+  // Only one recording runs at a time in practice; take the most recent one
+  // still marked as recording so the list can flag the live row.
+  const liveSessionId = () => {
+    for (const [id, session] of [...sessions].reverse()) {
+      if (session.isRecording) return id;
+    }
+    return null;
+  };
+
+  app.use(createLibraryRouter({ config, liveSessionId }));
+
   app.use(express.static(webRoot));
   return app;
 }
@@ -111,7 +124,15 @@ if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1])))
     final: (transcript) => summariser.final(transcript),
   };
 
-  createApp(config, deps).listen(config.port, () => {
-    console.log(`[scribe] listening on http://localhost:${config.port}`);
-  });
+  void (async () => {
+    // The restore point is the library as it was when Scribe was opened.
+    // Taken before the first request is served, so nothing can change
+    // underneath it.
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    await snapshotLibrary(config.sessionsDir, stamp);
+
+    createApp(config, deps).listen(config.port, () => {
+      console.log(`[scribe] listening on http://localhost:${config.port}`);
+    });
+  })();
 }

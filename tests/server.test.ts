@@ -154,4 +154,25 @@ describe("HTTP API", () => {
     expect(body).not.toContain("sk-ant-test");
     server.close();
   });
+
+  it("serves the library alongside the recording routes", async () => {
+    const { base, server } = await app();
+    const res = await fetch(`${base}/api/library`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).categories).toEqual([]);
+    server.close();
+  });
+
+  it("marks the session it is currently recording as live", async () => {
+    const { base, server } = await app();
+    const { id } = await (await fetch(`${base}/api/sessions`, { method: "POST" })).json();
+
+    const before = await (await fetch(`${base}/api/library`)).json();
+    expect(before.categories[0].sessions[0]).toMatchObject({ id, live: true });
+
+    await fetch(`${base}/api/sessions/${id}/stop`, { method: "POST" });
+    const after = await (await fetch(`${base}/api/library`)).json();
+    expect(after.categories[0].sessions[0].live).toBe(false);
+    server.close();
+  });
 });
