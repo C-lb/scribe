@@ -42,12 +42,24 @@ export interface LibraryRouterDeps {
   reveal?: (dir: string) => Promise<void>;
 }
 
-async function listFolders(sessionsDir: string): Promise<string[]> {
+/**
+ * `null` means the listing failed, which is not the same as finding nothing.
+ * The distinction matters because writeLibrary prunes every entry whose id it
+ * is not handed: one unreadable readdir treated as "no sessions" would write a
+ * library with no titles and no categories at all. Read paths can safely fall
+ * back to empty and recover on the next request; write paths must refuse.
+ *
+ * A sessions directory that does not exist yet genuinely holds nothing, so
+ * that one case is an empty listing rather than a failure.
+ */
+async function listFolders(sessionsDir: string): Promise<string[] | null> {
   try {
     const items = await readdir(sessionsDir, { withFileTypes: true });
     return items.filter((i) => i.isDirectory() && isSessionId(i.name)).map((i) => i.name);
-  } catch {
-    return [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    console.error("[scribe] could not list the sessions directory:", error);
+    return null;
   }
 }
 
@@ -91,7 +103,7 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
   /** Every write answers with the whole re-rendered library, so the browser
    *  never has to reconstruct what the server just decided. */
   async function respondWithLibrary(res: express.Response): Promise<void> {
-    const ids = await listFolders(sessionsDir);
+    const ids = (await listFolders(sessionsDir)) ?? [];
     const file = await readLibrary(sessionsDir);
     const view = mergeLibrary(file, await describeFolders(sessionsDir, ids), deps.liveSessionId());
     res.json({ ...view, canRestore: await hasRollback(sessionsDir) });
@@ -105,7 +117,14 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
     res: express.Response,
     change: (file: LibraryFile) => LibraryFile | Promise<LibraryFile>,
   ): Promise<void> {
+    // Before anything else, and before the change runs: the write prunes every
+    // entry not in this list, so a listing we could not read is a reason to
+    // write nothing at all rather than a reason to write an empty library.
     const ids = await listFolders(sessionsDir);
+    if (ids === null) {
+      res.status(500).json({ error: "internal error" });
+      return;
+    }
 
     let next: LibraryFile;
     try {
@@ -127,7 +146,9 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
 
   router.get("/api/library", async (_req, res) => {
     try {
-      const ids = await listFolders(sessionsDir);
+      // Nothing is written here, so a failed listing costs the user one empty
+      // render and recovers on the next request.
+      const ids = (await listFolders(sessionsDir)) ?? [];
       const file = await readLibrary(sessionsDir);
       const view = mergeLibrary(file, await describeFolders(sessionsDir, ids), deps.liveSessionId());
       res.json({ ...view, canRestore: await hasRollback(sessionsDir) });

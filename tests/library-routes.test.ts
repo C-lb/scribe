@@ -1,5 +1,21 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+
+// One failure switch for readdir, so a test can make the sessions directory
+// unlistable the way EMFILE or a permissions blip would. Everything else in
+// node:fs/promises stays real: the tests write library files through it.
+const { readdirFails } = vi.hoisted(() => ({ readdirFails: { value: false } }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    readdir: (...args: Parameters<typeof actual.readdir>) => {
+      if (!readdirFails.value) return (actual.readdir as (...a: unknown[]) => unknown)(...args);
+      return Promise.reject(Object.assign(new Error("too many open files"), { code: "EMFILE" }));
+    },
+  };
+});
+
+import { mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import http from "node:http";
 import path from "node:path";
@@ -32,91 +48,130 @@ async function seed(dir: string, id: string, files: Record<string, string> = {})
 describe("GET /api/library", () => {
   it("lists folders it has never seen under Uncategorised", async () => {
     const { base, dir, server } = await serve();
-    await seed(dir, "2026-08-18-17-03-30");
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
 
-    const body = await (await fetch(`${base}/api/library`)).json();
-    expect(body.categories[0].id).toBe("uncategorised");
-    expect(body.categories[0].sessions[0].title).toBe("18 August 2026, 17:03");
-    expect(body.canRestore).toBe(false);
-    server.close();
+      const body = await (await fetch(`${base}/api/library`)).json();
+      expect(body.categories[0].id).toBe("uncategorised");
+      expect(body.categories[0].sessions[0].title).toBe("18 August 2026, 17:03");
+      expect(body.canRestore).toBe(false);
+    } finally {
+      server.close();
+    }
   });
 
   it("ignores non-session directories and stray files", async () => {
     const { base, dir, server } = await serve();
-    await seed(dir, "2026-08-18-17-03-30");
-    await mkdir(path.join(dir, ".library-backups"), { recursive: true });
-    await writeFile(path.join(dir, "library.json"), "{}", "utf8");
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+      await mkdir(path.join(dir, ".library-backups"), { recursive: true });
+      await writeFile(path.join(dir, "library.json"), "{}", "utf8");
 
-    const body = await (await fetch(`${base}/api/library`)).json();
-    const ids = body.categories.flatMap((c: { sessions: { id: string }[] }) => c.sessions.map((s) => s.id));
-    expect(ids).toEqual(["2026-08-18-17-03-30"]);
-    server.close();
+      const body = await (await fetch(`${base}/api/library`)).json();
+      const ids = body.categories.flatMap((c: { sessions: { id: string }[] }) =>
+        c.sessions.map((s) => s.id),
+      );
+      expect(ids).toEqual(["2026-08-18-17-03-30"]);
+    } finally {
+      server.close();
+    }
   });
 
   it("reads the duration out of meta.json and marks the live session", async () => {
     const { base, dir, server } = await serve("2026-08-18-18-00-00");
-    await seed(dir, "2026-08-18-17-03-30", { "meta.json": JSON.stringify({ audioSeconds: 1800 }) });
-    await seed(dir, "2026-08-18-18-00-00");
+    try {
+      await seed(dir, "2026-08-18-17-03-30", {
+        "meta.json": JSON.stringify({ audioSeconds: 1800 }),
+      });
+      await seed(dir, "2026-08-18-18-00-00");
 
-    const body = await (await fetch(`${base}/api/library`)).json();
-    const rows: { id: string; live: boolean; audioSeconds: number | null }[] =
-      body.categories[0].sessions;
-    expect(rows.find((r) => r.id === "2026-08-18-17-03-30")).toMatchObject({
-      live: false, audioSeconds: 1800,
-    });
-    expect(rows.find((r) => r.id === "2026-08-18-18-00-00")).toMatchObject({
-      live: true, audioSeconds: null,
-    });
-    server.close();
+      const body = await (await fetch(`${base}/api/library`)).json();
+      const rows: { id: string; live: boolean; audioSeconds: number | null }[] =
+        body.categories[0].sessions;
+      expect(rows.find((r) => r.id === "2026-08-18-17-03-30")).toMatchObject({
+        live: false, audioSeconds: 1800,
+      });
+      expect(rows.find((r) => r.id === "2026-08-18-18-00-00")).toMatchObject({
+        live: true, audioSeconds: null,
+      });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("shows an empty library rather than failing when the folders cannot be listed", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+      readdirFails.value = true;
+      const res = await fetch(`${base}/api/library`);
+      expect(res.status).toBe(200);
+      expect((await res.json()).categories).toEqual([]);
+    } finally {
+      readdirFails.value = false;
+      server.close();
+    }
   });
 });
 
 describe("GET /api/sessions/:id", () => {
   it("returns the transcript and the final summary", async () => {
     const { base, dir, server } = await serve();
-    await seed(dir, "2026-08-18-17-03-30", {
-      "transcript.md": "00:00 hello world\n",
-      "summary.md": "# Notes\n\nSomething.\n",
-      "meta.json": JSON.stringify({ audioSeconds: 60 }),
-    });
+    try {
+      await seed(dir, "2026-08-18-17-03-30", {
+        "transcript.md": "00:00 hello world\n",
+        "summary.md": "# Notes\n\nSomething.\n",
+        "meta.json": JSON.stringify({ audioSeconds: 60 }),
+      });
 
-    const body = await (await fetch(`${base}/api/sessions/2026-08-18-17-03-30`)).json();
-    expect(body.transcript).toContain("hello world");
-    expect(body.summaryMarkdown).toContain("# Notes");
-    expect(body.title).toBe("18 August 2026, 17:03");
-    expect(body.meta.audioSeconds).toBe(60);
-    server.close();
+      const body = await (await fetch(`${base}/api/sessions/2026-08-18-17-03-30`)).json();
+      expect(body.transcript).toContain("hello world");
+      expect(body.summaryMarkdown).toContain("# Notes");
+      expect(body.title).toBe("18 August 2026, 17:03");
+      expect(body.meta.audioSeconds).toBe(60);
+    } finally {
+      server.close();
+    }
   });
 
   it("falls back to the running summary when the final summary failed", async () => {
     const { base, dir, server } = await serve();
-    await seed(dir, "2026-08-18-17-03-30", {
-      "transcript.md": "00:00 hello\n",
-      "running-summary.json": JSON.stringify({
-        topics: ["Raft"], keyPoints: [], definitions: [], flagged: [], openQuestions: [],
-      }),
-    });
+    try {
+      await seed(dir, "2026-08-18-17-03-30", {
+        "transcript.md": "00:00 hello\n",
+        "running-summary.json": JSON.stringify({
+          topics: ["Raft"], keyPoints: [], definitions: [], flagged: [], openQuestions: [],
+        }),
+      });
 
-    const body = await (await fetch(`${base}/api/sessions/2026-08-18-17-03-30`)).json();
-    expect(body.summaryMarkdown).toBeNull();
-    expect(body.runningSummary.topics).toEqual(["Raft"]);
-    server.close();
+      const body = await (await fetch(`${base}/api/sessions/2026-08-18-17-03-30`)).json();
+      expect(body.summaryMarkdown).toBeNull();
+      expect(body.runningSummary.topics).toEqual(["Raft"]);
+    } finally {
+      server.close();
+    }
   });
 
   it("treats an empty summary file the same as a missing one", async () => {
     const { base, dir, server } = await serve();
-    await seed(dir, "2026-08-18-17-03-30", { "transcript.md": "x", "summary.md": "   \n" });
+    try {
+      await seed(dir, "2026-08-18-17-03-30", { "transcript.md": "x", "summary.md": "   \n" });
 
-    const body = await (await fetch(`${base}/api/sessions/2026-08-18-17-03-30`)).json();
-    expect(body.summaryMarkdown).toBeNull();
-    server.close();
+      const body = await (await fetch(`${base}/api/sessions/2026-08-18-17-03-30`)).json();
+      expect(body.summaryMarkdown).toBeNull();
+    } finally {
+      server.close();
+    }
   });
 
   it("400s an id outside the id shape and 404s one that does not exist", async () => {
     const { base, server } = await serve();
-    expect((await fetch(`${base}/api/sessions/not-an-id`)).status).toBe(400);
-    expect((await fetch(`${base}/api/sessions/2026-08-18-17-03-30`)).status).toBe(404);
-    server.close();
+    try {
+      expect((await fetch(`${base}/api/sessions/not-an-id`)).status).toBe(400);
+      expect((await fetch(`${base}/api/sessions/2026-08-18-17-03-30`)).status).toBe(404);
+    } finally {
+      server.close();
+    }
   });
 });
 
@@ -276,6 +331,36 @@ describe("library writes", () => {
       const res = await json(base, "PATCH", `/api/categories/${id}`, { order: "not-a-number" });
       expect(res.status).toBe(400);
     } finally {
+      server.close();
+    }
+  });
+
+  // The write prunes every entry whose folder it is not told about, so a
+  // listing that failed must never be mistaken for a folder list with nothing
+  // in it: that would write a library with every title and category gone.
+  it("writes nothing when the sessions directory cannot be listed", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+      const created = await (await json(base, "POST", "/api/categories", { name: "BUSI 520" })).json();
+      const categoryId = created.categories[0].id;
+      await json(base, "PATCH", "/api/sessions/2026-08-18-17-03-30", {
+        title: "Raft", categoryId,
+      });
+      const before = await readFile(path.join(dir, "library.json"), "utf8");
+
+      readdirFails.value = true;
+      const res = await json(base, "PATCH", "/api/sessions/2026-08-18-17-03-30", { title: "Paxos" });
+      expect(res.status).toBe(500);
+      expect((await res.json()).error).toBe("internal error");
+      readdirFails.value = false;
+
+      expect(await readFile(path.join(dir, "library.json"), "utf8")).toBe(before);
+      const body = await (await fetch(`${base}/api/library`)).json();
+      expect(body.categories[0].name).toBe("BUSI 520");
+      expect(body.categories[0].sessions[0].title).toBe("Raft");
+    } finally {
+      readdirFails.value = false;
       server.close();
     }
   });
