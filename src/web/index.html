@@ -24,7 +24,14 @@
       </section>
 
       <section class="pane" aria-labelledby="summary-heading">
-        <h2 id="summary-heading">Summary</h2>
+        <div class="pane__head">
+          <h2 id="summary-heading">Summary</h2>
+          <div class="pane__actions" id="summary-actions">
+            <button id="summary-copy" class="ghost" type="button">Copy</button>
+            <button id="summary-save" class="ghost" type="button">Save</button>
+            <button id="summary-share" class="ghost" type="button" hidden>Share</button>
+          </div>
+        </div>
         <div id="summary" class="summary">
           <p class="empty">The first summary appears after about five minutes.</p>
         </div>

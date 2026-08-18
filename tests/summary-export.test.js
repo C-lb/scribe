@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { summaryToPlainText, sanitiseFilename } from "../src/web/summary-export.js";
+import {
+  buildMarkdownFile,
+  exportState,
+  sanitiseFilename,
+  summaryToPlainText,
+} from "../src/web/summary-export.js";
 
 const running = (over = {}) => ({
   topics: [], keyPoints: [], definitions: [], flagged: [], openQuestions: [], ...over,
@@ -175,5 +180,49 @@ describe("sanitiseFilename", () => {
   it("falls back to the session id when the title sanitises down to nothing", () => {
     expect(sanitiseFilename("←→", "2026-08-18-17-03-30")).toBe("2026-08-18-17-03-30");
     expect(sanitiseFilename("", "2026-08-18-17-03-30")).toBe("2026-08-18-17-03-30");
+  });
+});
+
+describe("exportState", () => {
+  it("is disabled and explains itself while the first summary is still coming", () => {
+    expect(exportState({ input: null, recording: true })).toEqual({
+      enabled: false,
+      reason: "The first summary appears after about five minutes.",
+    });
+  });
+
+  it("is disabled and honest when a finished session has no summary at all", () => {
+    expect(exportState({ input: null, recording: false })).toEqual({
+      enabled: false,
+      reason: "The summary for this session failed, so there is nothing to send.",
+    });
+  });
+
+  it("is enabled once there is any summary", () => {
+    expect(exportState({ input: { kind: "markdown", markdown: "# x" }, recording: false })).toEqual({
+      enabled: true,
+      reason: "",
+    });
+  });
+});
+
+describe("buildMarkdownFile", () => {
+  it("names the file from the title and leads with it as a heading", () => {
+    const file = buildMarkdownFile({
+      title: "Raft and Consensus",
+      sessionId: "2026-08-18-17-03-30",
+      markdown: "## Overview\n\nSomething.\n",
+    });
+    expect(file.name).toBe("raft-and-consensus.md");
+    expect(file.text).toBe("# Raft and Consensus\n\n## Overview\n\nSomething.\n");
+  });
+
+  it("does not repeat a heading the markdown already opens with", () => {
+    const file = buildMarkdownFile({
+      title: "Raft",
+      sessionId: "id",
+      markdown: "# Raft\n\nBody.\n",
+    });
+    expect(file.text).toBe("# Raft\n\nBody.\n");
   });
 });

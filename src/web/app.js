@@ -1,5 +1,6 @@
 import { createRecorder } from "./audio/recorder.js";
 import { createUploader } from "./upload.js";
+import { createExportControls } from "./summary-export.js";
 
 const recordButton = document.getElementById("record");
 const transcriptEl = document.getElementById("transcript");
@@ -15,6 +16,22 @@ let sessionId = null;
 let startedAt = null;
 let timerHandle = null;
 let pinnedToLive = true;
+
+// What the export controls act on: whichever summary is displayed right now.
+let displayedSummary = null; // { kind: "running", summary } | { kind: "markdown", markdown }
+let displayedTitle = "Summary";
+let recording = false;
+
+const exportControls = createExportControls({
+  root: document.getElementById("summary-actions"),
+  getSummary: () => ({
+    input: displayedSummary,
+    title: displayedTitle,
+    sessionId,
+    recording,
+  }),
+  setStatus,
+});
 
 function formatElapsed(ms) {
   const total = Math.floor(ms / 1000);
@@ -50,6 +67,9 @@ function appendLine(line) {
 }
 
 function renderSummary(summary) {
+  displayedSummary = { kind: "running", summary };
+  exportControls.refresh();
+
   const sections = [
     ["Topics", summary.topics],
     ["Key points", summary.keyPoints],
@@ -123,6 +143,10 @@ async function start() {
   recorder = createRecorder({ onChunk: (chunk) => uploader.enqueue(chunk) });
   await recorder.start();
 
+  recording = true;
+  displayedTitle = `Scribe ${new Date().toLocaleDateString()}`;
+  exportControls.refresh();
+
   startedAt = Date.now();
   timerHandle = setInterval(() => {
     timerEl.textContent = formatElapsed(Date.now() - startedAt);
@@ -144,10 +168,20 @@ async function stop() {
   const response = await fetch(`/api/sessions/${sessionId}/stop`, { method: "POST" });
   const { markdown } = await response.json();
 
-  const done = document.createElement("pre");
-  done.className = "final";
-  done.textContent = markdown;
-  summaryEl.replaceChildren(done);
+  recording = false;
+
+  // If the final summary failed, markdown is empty: leave displayedSummary at
+  // whatever the last running summary was, rather than overwriting it with
+  // nothing. exportState() then falls back to that, or to the honest "the
+  // summary failed" message if there was never a running summary either.
+  if (markdown) {
+    displayedSummary = { kind: "markdown", markdown };
+    const done = document.createElement("pre");
+    done.className = "final";
+    done.textContent = markdown;
+    summaryEl.replaceChildren(done);
+  }
+  exportControls.refresh();
 
   events.close();
   setStatus(`Saved to sessions/${sessionId}`);

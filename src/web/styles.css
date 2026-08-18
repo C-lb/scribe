@@ -251,7 +251,8 @@ body{
 
 /* Pane headings are labels for the content under them, so they take the
    eyebrow role: small, quiet, sentence case. Never all caps. */
-.pane > h2{
+.pane > h2,
+.pane__head h2{
   font-size:var(--t-cap);
   font-weight:600;
   line-height:var(--lh-tight);
@@ -379,6 +380,30 @@ body{
   .panes{ padding:var(--s4); }
   .record{ --btn-py:14px; }
 }
+
+/* ── Pane header: title left, export controls right. Flat ghost buttons —
+      they are secondary to the record button, which keeps the one accent. ── */
+.pane__head{
+  display:flex; align-items:center; justify-content:space-between;
+  gap:var(--s3); margin-bottom:var(--s3);
+}
+.pane__actions{ display:flex; gap:var(--s2); }
+
+.ghost{
+  font:500 var(--t-cap)/var(--lh-flat) var(--font);
+  letter-spacing:var(--tr-cap);
+  padding:8px 16px;
+  border:1px solid var(--line);
+  border-radius:var(--r-sm);
+  background:var(--surface-1);
+  color:var(--ink-2);
+  white-space:nowrap;
+  cursor:pointer;
+}
+.ghost:hover:not(:disabled){ background:var(--surface-2); color:var(--ink); }
+.ghost:active:not(:disabled){ background:var(--surface-3); }
+.ghost:disabled{ opacity:.45; cursor:default; }
+.ghost:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
 
 @media (prefers-reduced-motion:reduce){
   *{ animation-duration:.01ms !important; transition:none !important; }
