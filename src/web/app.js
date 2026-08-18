@@ -268,6 +268,10 @@ async function start() {
   // five minutes" for the whole gap before mic permission resolves, not the
   // stale "failed" (or, on the very first recording, the page-load silence).
   liveSource.summary = null;
+  // The same argument applies to the lines: the previous recording's transcript
+  // must not sit above the new one's. Emptied in place rather than reassigned,
+  // so anything already holding this array keeps holding the live one.
+  liveSource.lines.length = 0;
   recording = true;
   started = true;
 
@@ -278,7 +282,12 @@ async function start() {
   setStatus("");
 
   const created = await fetch("/api/sessions", { method: "POST" });
-  sessionId = (await created.json()).id;
+  // The server names the session, so an export taken mid-recording and one
+  // taken after reopening the same session from the drawer produce the same
+  // filename. Deriving a second date format here is how they drifted apart.
+  const session = await created.json();
+  sessionId = session.id;
+  liveSource.title = session.title;
 
   events = new EventSource(`/api/sessions/${sessionId}/events`);
   // This handler sits next to the capture path: a malformed or unexpected
@@ -318,7 +327,6 @@ async function start() {
   recorder = createRecorder({ onChunk: (chunk) => uploader.enqueue(chunk) });
   await recorder.start();
 
-  liveSource.title = `Scribe ${new Date().toLocaleDateString()}`;
   exportControls.refresh();
 
   startedAt = Date.now();

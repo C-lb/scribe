@@ -7,7 +7,7 @@ import { Session, type SessionDeps } from "./session.js";
 import { createGroqClient } from "./groq.js";
 import { createSummariser } from "./claude.js";
 import { createLibraryRouter } from "./library-routes.js";
-import { snapshotLibrary } from "./library.js";
+import { snapshotLibrary, defaultTitle } from "./library.js";
 
 // __dirname does not exist in ES modules.
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -21,7 +21,10 @@ export function createApp(config: Config, deps: SessionDeps): express.Express {
     try {
       const session = await Session.create(config, deps);
       sessions.set(session.id, session);
-      res.json({ id: session.id });
+      // The title goes back with the id so the browser never has to invent a
+      // name for the recording it just started: the export filename mid-record
+      // then matches the one the drawer gives the same session afterwards.
+      res.json({ id: session.id, title: defaultTitle(session.id) });
     } catch (error) {
       console.error("[scribe] failed to create session:", error);
       res.status(500).json({ error: "internal error" });
