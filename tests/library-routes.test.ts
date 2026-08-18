@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import http from "node:http";
 import path from "node:path";
 import express from "express";
 import { loadConfig } from "../src/server/config.js";
@@ -312,10 +313,45 @@ describe("POST /api/sessions/:id/reveal", () => {
   it("rejects traversal, separators, and anything outside the id shape without shelling out", async () => {
     const { base, server, reveal } = await serveWithReveal();
     try {
+      // "not-an-id" and "%252e%252e" (which arrives at the handler as the
+      // literal string "%2e%2e", not decoded further) both exercise "a
+      // non-matching string is rejected". The decoded-traversal property is
+      // covered separately below by a raw ".." id and by the embedded
+      // separator in "2026-08-18-17-03-30%2F..".
       for (const bad of ["not-an-id", "%252e%252e", "2026-08-18-17-03-30%2F..", "a;open%20-a%20Calculator"]) {
         const res = await fetch(`${base}/api/sessions/${bad}/reveal`, { method: "POST" });
         expect(res.status).toBe(400);
       }
+      expect(reveal).not.toHaveBeenCalled();
+    } finally {
+      server.close();
+    }
+  });
+
+  it("rejects a decoded '..' id delivered over a raw socket, where client-side URL normalisation can't intervene", async () => {
+    // fetch()/undici, and even http.request(urlString), parse the URL with
+    // the WHATWG URL algorithm, which collapses "%2e%2e" (and bare "..")
+    // path segments before the request ever leaves the process — so those
+    // clients can't put a literal ".." on the wire. Passing `path` directly
+    // in http.request's options-object form skips URL parsing entirely and
+    // sends the raw string, which is what an attacker using curl or a raw
+    // socket could also do. This confirms the route's own validation — not
+    // the HTTP client — is what stops it.
+    const { server, reveal } = await serveWithReveal();
+    const port = (server.address() as { port: number }).port;
+    try {
+      const status = await new Promise<number>((resolve, reject) => {
+        const req = http.request(
+          { hostname: "127.0.0.1", port, path: "/api/sessions/%2e%2e/reveal", method: "POST" },
+          (res) => {
+            res.resume();
+            res.on("end", () => resolve(res.statusCode ?? 0));
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      });
+      expect(status).toBe(400);
       expect(reveal).not.toHaveBeenCalled();
     } finally {
       server.close();

@@ -27,8 +27,9 @@ const run = promisify(execFile);
 
 /**
  * The path goes in as an array element, never interpolated into a shell
- * string, so shell metacharacters have no meaning even if the id validation
- * above were somehow bypassed. Belt and braces, deliberately.
+ * string, so shell metacharacters have no meaning even if the route's id
+ * validation (below, in createLibraryRouter) were somehow bypassed. Belt
+ * and braces, deliberately.
  */
 async function openInFinder(dir: string): Promise<void> {
   await run("open", [dir]);
