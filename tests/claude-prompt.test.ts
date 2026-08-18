@@ -61,8 +61,4 @@ describe("RUNNING_SYSTEM_PROMPT", () => {
     expect(RUNNING_SYSTEM_PROMPT).not.toMatch(/\d{4}-\d{2}-\d{2}/);
     expect(RUNNING_SYSTEM_PROMPT).not.toMatch(/\d{2}:\d{2}:\d{2}/);
   });
-
-  it("is a frozen constant, identical on every read", () => {
-    expect(RUNNING_SYSTEM_PROMPT).toBe(RUNNING_SYSTEM_PROMPT);
-  });
 });

@@ -1,4 +1,4 @@
-import { downsampleTo16k } from "./resample.js";
+import { createDownsampler } from "./resample.js";
 import { encodeWav } from "./wav.js";
 import { findCutPoint } from "./chunker.js";
 
@@ -11,6 +11,7 @@ export function createRecorder({ chunkSeconds = 20, onChunk }) {
   let buffer = new Float32Array(0);
   let index = 0;
   let emittedSamples = 0;
+  let downsampler = null;
 
   const minSeconds = Math.max(1, chunkSeconds - 5);
   const maxSeconds = chunkSeconds + 5;
@@ -57,9 +58,19 @@ export function createRecorder({ chunkSeconds = 20, onChunk }) {
 
       const source = context.createMediaStreamSource(stream);
       node = new AudioWorkletNode(context, "tap");
+      downsampler = createDownsampler(context.sampleRate, TARGET_RATE);
+      // A render quantum (128 frames) is not a multiple of the
+      // input/output ratio in general, so downsampling must carry its
+      // remainder across calls -- see createDownsampler. This handler also
+      // sits next to the capture path: a malformed worklet message must
+      // never be able to throw and take the recording down mid-lecture.
       node.port.onmessage = (event) => {
-        append(downsampleTo16k(event.data, context.sampleRate, TARGET_RATE));
-        drainChunks();
+        try {
+          append(downsampler.push(event.data));
+          drainChunks();
+        } catch (error) {
+          console.error("[scribe] failed to handle worklet message", error);
+        }
       };
 
       source.connect(node);
@@ -87,6 +98,7 @@ export function createRecorder({ chunkSeconds = 20, onChunk }) {
       context = null;
       stream = null;
       node = null;
+      downsampler = null;
     },
   };
 }
