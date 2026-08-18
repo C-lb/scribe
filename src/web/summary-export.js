@@ -142,14 +142,19 @@ export function createExportControls({ root, getSummary, setStatus }) {
   shareButton.hidden = typeof navigator.share !== "function";
 
   function refresh() {
-    const { input, recording } = getSummary();
-    const { enabled, reason } = exportState({ input, recording });
+    // Forward the whole object rather than re-listing fields: getSummary()
+    // and exportState() agree by construction this way, and a field can't
+    // go missing in transit the way `started` just did.
+    const { enabled, reason } = exportState(getSummary());
     for (const button of [copyButton, saveButton, shareButton]) {
       button.disabled = !enabled;
       button.title = reason;
     }
     reasonEl.textContent = reason;
-    reasonEl.hidden = enabled;
+    // Tied to whether there is a reason to show, not to `enabled`: the idle
+    // (page-load) state is disabled with no reason, and that's exactly when
+    // the line must stay hidden.
+    reasonEl.hidden = !reason;
   }
 
   copyButton.addEventListener("click", async () => {
