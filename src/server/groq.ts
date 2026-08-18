@@ -17,6 +17,9 @@ export function createGroqClient(config: Config) {
       "file",
       new Blob(
         [
+          // Buffer.buffer is typed ArrayBufferLike (it may be a SharedArrayBuffer);
+          // Blob wants a real ArrayBuffer, so we assert. offset/length are required,
+          // not cosmetic: Buffer is a view into a pooled allocation and rarely starts at 0.
           new Uint8Array(
             input.audio.buffer as ArrayBuffer,
             input.audio.byteOffset,
