@@ -108,6 +108,10 @@ export function createSummariser(config: Config) {
       if (!response.parsed_output) {
         throw new Error("Claude returned a running summary that failed to parse");
       }
+      console.log(
+        `[scribe] running summary: ${response.usage.input_tokens} new, ` +
+          `${response.usage.cache_read_input_tokens ?? 0} cached`,
+      );
       return response.parsed_output;
     },
 
