@@ -1,5 +1,7 @@
 import express from "express";
-import { readdir, readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Config } from "./config.js";
 import {
@@ -21,10 +23,22 @@ import {
   type OrderPayload,
 } from "./library.js";
 
+const run = promisify(execFile);
+
+/**
+ * The path goes in as an array element, never interpolated into a shell
+ * string, so shell metacharacters have no meaning even if the id validation
+ * above were somehow bypassed. Belt and braces, deliberately.
+ */
+async function openInFinder(dir: string): Promise<void> {
+  await run("open", [dir]);
+}
+
 export interface LibraryRouterDeps {
   config: Config;
   liveSessionId: () => string | null;
   now?: () => string;
+  reveal?: (dir: string) => Promise<void>;
 }
 
 async function listFolders(sessionsDir: string): Promise<string[]> {
@@ -71,6 +85,7 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
   router.use(express.json({ limit: "256kb" }));
 
   const stamp = deps.now ?? (() => new Date().toISOString().replace(/[:.]/g, "-"));
+  const reveal = deps.reveal ?? openInFinder;
 
   /** Every write answers with the whole re-rendered library, so the browser
    *  never has to reconstruct what the server just decided. */
@@ -186,6 +201,34 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
       })),
     };
     await mutate(res, (file) => applyOrder(file, payload));
+  });
+
+  router.post("/api/sessions/:id/reveal", async (req, res) => {
+    const { id } = req.params;
+    // Two gates: the id shape, then the resolved path. Either alone would
+    // probably do; this is the one route where user input reaches the OS.
+    if (!isSessionId(id)) return res.status(400).json({ error: "invalid session id" });
+
+    const dir = path.resolve(sessionsDir, id);
+    const root = path.resolve(sessionsDir);
+    if (dir !== path.join(root, id) || !dir.startsWith(`${root}${path.sep}`)) {
+      return res.status(400).json({ error: "invalid session id" });
+    }
+
+    try {
+      const info = await stat(dir);
+      if (!info.isDirectory()) return res.status(404).json({ error: "unknown session" });
+    } catch {
+      return res.status(404).json({ error: "unknown session" });
+    }
+
+    try {
+      await reveal(dir);
+      res.json({});
+    } catch (error) {
+      console.error("[scribe] reveal failed:", error);
+      res.status(500).json({ error: "could not open the folder" });
+    }
   });
 
   router.post("/api/library/restore", async (_req, res) => {

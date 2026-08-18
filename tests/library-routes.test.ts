@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -274,6 +274,60 @@ describe("library writes", () => {
 
       const res = await json(base, "PATCH", `/api/categories/${id}`, { order: "not-a-number" });
       expect(res.status).toBe(400);
+    } finally {
+      server.close();
+    }
+  });
+});
+
+describe("POST /api/sessions/:id/reveal", () => {
+  async function serveWithReveal() {
+    const dir = await mkdtemp(path.join(tmpdir(), "scribe-reveal-"));
+    const config = loadConfig({
+      GROQ_API_KEY: "gsk_test",
+      ANTHROPIC_API_KEY: "sk-ant-test",
+      SCRIBE_SESSIONS_DIR: dir,
+    } as NodeJS.ProcessEnv);
+    const reveal = vi.fn().mockResolvedValue(undefined);
+    const app = express();
+    app.use(createLibraryRouter({ config, liveSessionId: () => null, reveal }));
+    const server = app.listen(0);
+    const port = (server.address() as { port: number }).port;
+    return { base: `http://127.0.0.1:${port}`, dir, server, reveal };
+  }
+
+  it("opens the session folder", async () => {
+    const { base, dir, server, reveal } = await serveWithReveal();
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+
+      const res = await fetch(`${base}/api/sessions/2026-08-18-17-03-30/reveal`, { method: "POST" });
+      expect(res.status).toBe(200);
+      expect(reveal).toHaveBeenCalledWith(path.join(dir, "2026-08-18-17-03-30"));
+    } finally {
+      server.close();
+    }
+  });
+
+  it("rejects traversal, separators, and anything outside the id shape without shelling out", async () => {
+    const { base, server, reveal } = await serveWithReveal();
+    try {
+      for (const bad of ["not-an-id", "%252e%252e", "2026-08-18-17-03-30%2F..", "a;open%20-a%20Calculator"]) {
+        const res = await fetch(`${base}/api/sessions/${bad}/reveal`, { method: "POST" });
+        expect(res.status).toBe(400);
+      }
+      expect(reveal).not.toHaveBeenCalled();
+    } finally {
+      server.close();
+    }
+  });
+
+  it("404s a session folder that does not exist", async () => {
+    const { base, server, reveal } = await serveWithReveal();
+    try {
+      const res = await fetch(`${base}/api/sessions/2026-08-18-17-03-30/reveal`, { method: "POST" });
+      expect(res.status).toBe(404);
+      expect(reveal).not.toHaveBeenCalled();
     } finally {
       server.close();
     }
