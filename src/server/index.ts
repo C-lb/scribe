@@ -127,9 +127,18 @@ if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1])))
   void (async () => {
     // The restore point is the library as it was when Scribe was opened.
     // Taken before the first request is served, so nothing can change
-    // underneath it.
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    await snapshotLibrary(config.sessionsDir, stamp);
+    // underneath it. A failure here (permissions, full disk) must not stop
+    // the recorder from starting — a missing backup is recoverable, a lost
+    // recording is not.
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      await snapshotLibrary(config.sessionsDir, stamp);
+    } catch (error) {
+      console.error(
+        "[scribe] could not take a library restore point; starting recorder without one:",
+        error,
+      );
+    }
 
     createApp(config, deps).listen(config.port, () => {
       console.log(`[scribe] listening on http://localhost:${config.port}`);
