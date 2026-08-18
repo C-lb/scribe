@@ -19,6 +19,9 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
   const restoreButton = root.querySelector("#history-restore");
   let library = { categories: [], canRestore: false };
   let openId = null;
+  // An inline rename owns the list while it is open: see paint().
+  let editing = false;
+  let paintDeferred = false;
 
   // Remembered so the drawer is where the user left it across reloads.
   const OPEN_KEY = "scribe.sidebar.open";
@@ -61,14 +64,30 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
     paint();
   }
 
+  /**
+   * A repaint replaces the whole list, so one landing while a rename is open
+   * would destroy the input under the user's hands and either lose the edit or
+   * commit it by accident on the removal's blur. Refreshes fire on their own
+   * schedule (a recording starting or stopping), so the repaint waits for the
+   * edit to settle rather than the edit hoping no refresh lands.
+   */
   function paint() {
+    if (editing) {
+      paintDeferred = true;
+      return;
+    }
+    paintDeferred = false;
     listEl.replaceChildren();
     for (const category of library.categories) {
       listEl.append(renderCategory(category));
     }
     restoreButton.hidden = !library.canRestore;
-    restoreButton.dataset.armed = "no";
-    restoreButton.textContent = "Restore library";
+    disarmRestore();
+  }
+
+  /** Whatever the last skipped repaint was waiting to draw, draw it now. */
+  function flushPaint() {
+    if (paintDeferred) paint();
   }
 
   function renderCategory(category) {
@@ -107,7 +126,12 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
     row.setAttribute("role", "button");
     row.tabIndex = 0;
     row.dataset.sessionId = session.id;
-    if (session.id === openId) row.dataset.open = "yes";
+    if (session.id === openId) {
+      row.dataset.open = "yes";
+      // The highlight is a background step, so the selection needs to reach a
+      // screen reader some other way than colour and weight.
+      row.setAttribute("aria-current", "true");
+    }
     if (session.live) row.dataset.live = "yes";
     row.title = session.title;
 
@@ -143,8 +167,13 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
   function markOpen(id) {
     openId = id;
     for (const row of listEl.querySelectorAll(".row")) {
-      if (row.dataset.sessionId === id) row.dataset.open = "yes";
-      else delete row.dataset.open;
+      if (row.dataset.sessionId === id) {
+        row.dataset.open = "yes";
+        row.setAttribute("aria-current", "true");
+      } else {
+        delete row.dataset.open;
+        row.removeAttribute("aria-current");
+      }
     }
   }
 
@@ -158,13 +187,17 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
    * the overlay UI, not a hunt through the view logic.
    */
   async function open(session) {
-    if (!canOpen()) {
-      setStatus("Stop recording to read past sessions");
-      return;
-    }
+    // Returning to the live pane comes first. The guard below protects the
+    // recording from being navigated away from, and a row is only marked live
+    // while that recording is running, so guarding this branch would refuse
+    // the user the one route back to what they are recording.
     if (session.live) {
       onLive();
       markOpen(null);
+      return;
+    }
+    if (!canOpen()) {
+      setStatus("Stop recording to read past sessions");
       return;
     }
     try {
@@ -178,11 +211,16 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
 
   /** One interaction for both rows and headings, rather than two to learn. */
   function editInline(labelEl, current, commit) {
+    // Taken before the label leaves the tree: a detached node has no
+    // ancestors, so closest() would come back null in finish().
+    const row = labelEl.closest(".row");
+
     const input = document.createElement("input");
     input.className = "inline-edit";
     input.type = "text";
     input.value = current;
     labelEl.replaceWith(input);
+    editing = true;
     input.focus();
     input.select();
 
@@ -197,14 +235,32 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
       if (settled) return;
       settled = true;
       const value = input.value;
+
+      // The new name goes up straight away and the server payload confirms it.
+      // An empty value is the exception: only the server knows the date default
+      // it reverts to, so that one waits for the payload.
+      if (save && value.trim()) {
+        labelEl.textContent = value.trim();
+        if (row) row.title = value.trim();
+      }
+
       input.replaceWith(labelEl);
-      if (!save) return;
+      editing = false;
+
+      if (!save) {
+        flushPaint();
+        return;
+      }
       try {
         await commit(value);
       } catch (error) {
         // Optimism rolled back: the reason goes where every other reason goes.
         setStatus(`Could not save that name: ${error.message}`);
         await refresh().catch(() => {});
+      } finally {
+        // A refresh that arrived mid-edit was held back; it draws now, on top
+        // of whatever the commit already painted.
+        flushPaint();
       }
     };
 
@@ -216,6 +272,21 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
     input.addEventListener("blur", () => finish(true));
   }
 
+  /** Arming is a moment, not a mode: anything but a second click drops it. */
+  function disarmRestore() {
+    if (restoreButton.dataset.armed !== "yes") return;
+    restoreButton.dataset.armed = "no";
+    restoreButton.textContent = "Restore library";
+  }
+
+  restoreButton.addEventListener("blur", disarmRestore);
+  document.addEventListener("click", (event) => {
+    // The arming click's own target is the button, so this never disarms the
+    // click that just armed it.
+    if (event.target === restoreButton || restoreButton.contains(event.target)) return;
+    disarmRestore();
+  });
+
   restoreButton.addEventListener("click", async () => {
     // Two-step inline confirm. A native confirm() blocks the page and is out
     // of keeping with how the rest of this app reports things.
@@ -226,6 +297,7 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
       restoreButton.textContent = "Click again";
       return;
     }
+    disarmRestore();
     try {
       applyPayload(await api("POST", "/api/library/restore"));
       setStatus("Library restored to when Scribe opened");
