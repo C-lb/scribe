@@ -24,6 +24,11 @@ export class Session {
   private failedChunks = 0;
   private audioSeconds = 0;
   private queue: Promise<unknown> = Promise.resolve();
+  private recording = true;
+
+  get isRecording(): boolean {
+    return this.recording;
+  }
 
   private constructor(
     readonly id: string,
@@ -125,6 +130,15 @@ export class Session {
       this.summary = await this.deps.running(this.transcript.fullText(), this.summary);
       this.lastSummarisedIndex = lastIndex;
       this.events.publish({ type: "summary", summary: this.summary });
+
+      // Persisted so a session whose final summary failed still has something
+      // to display and to export. Failing to write it must not stop the
+      // recording, so it is caught here rather than propagating.
+      await writeFile(
+        path.join(this.dir, "running-summary.json"),
+        `${JSON.stringify(this.summary, null, 2)}\n`,
+        "utf8",
+      ).catch((error) => console.error("[scribe] failed to save running summary:", error));
     } catch (error) {
       // Leave the previous summary standing and try again next interval.
       console.error("[scribe] running summary failed:", error);
@@ -163,6 +177,7 @@ export class Session {
       "utf8",
     );
 
+    this.recording = false;
     return markdown;
   }
 }

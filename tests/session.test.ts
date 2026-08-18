@@ -3,6 +3,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Session } from "../src/server/session.js";
+import type { SessionDeps } from "../src/server/session.js";
 import { loadConfig } from "../src/server/config.js";
 import type { ScribeEvent } from "../src/server/events.js";
 
@@ -31,6 +32,15 @@ const chunk = (index: number) => ({
   endMs: index * 20_000,
   audio: Buffer.from("fake wav"),
 });
+
+// Interval defaults to 0 so a running summary fires on the very first chunk
+// without needing tests to fast-forward a clock.
+async function makeSession(depsOverrides: Partial<SessionDeps> = {}) {
+  const config = await testConfig({ SCRIBE_SUMMARY_INTERVAL_MINUTES: "0" });
+  const deps = { ...okDeps(), ...depsOverrides };
+  const session = await Session.create(config, deps);
+  return { session, dir: session.dir };
+}
 
 describe("Session", () => {
   it("transcribes a chunk and publishes a transcript event", async () => {
@@ -161,5 +171,27 @@ describe("Session", () => {
     const meta = await readFile(path.join(session.dir, "meta.json"), "utf8");
     expect(meta).not.toContain("gsk_test");
     expect(meta).not.toContain("sk-ant-test");
+  });
+
+  it("writes the running summary to disk so a failed final summary still has something to show", async () => {
+    const { session, dir } = await makeSession({
+      running: vi.fn().mockResolvedValue({
+        topics: ["Raft"], keyPoints: [], definitions: [], flagged: [], openQuestions: [],
+      }),
+      final: vi.fn().mockRejectedValue(new Error("overloaded")),
+    });
+
+    await session.ingestChunk({ index: 1, startMs: 0, endMs: 20_000, audio: Buffer.from("wav") });
+    await session.stop();
+
+    const saved = JSON.parse(await readFile(path.join(dir, "running-summary.json"), "utf8"));
+    expect(saved.topics).toEqual(["Raft"]);
+  });
+
+  it("reports that it is recording until stop resolves", async () => {
+    const { session } = await makeSession();
+    expect(session.isRecording).toBe(true);
+    await session.stop();
+    expect(session.isRecording).toBe(false);
   });
 });
