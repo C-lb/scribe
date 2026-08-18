@@ -118,3 +118,132 @@ describe("GET /api/sessions/:id", () => {
     server.close();
   });
 });
+
+const json = (base: string, method: string, url: string, body?: unknown) =>
+  fetch(`${base}${url}`, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+describe("library writes", () => {
+  it("renames a session and returns the re-rendered library", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+
+      const res = await json(base, "PATCH", "/api/sessions/2026-08-18-17-03-30", { title: "Raft" });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.categories[0].sessions[0].title).toBe("Raft");
+      expect(body.categories[0].sessions[0].named).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("clearing a title reverts the row to its date", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+      await json(base, "PATCH", "/api/sessions/2026-08-18-17-03-30", { title: "Raft" });
+
+      const body = await (await json(base, "PATCH", "/api/sessions/2026-08-18-17-03-30", { title: "" })).json();
+      expect(body.categories[0].sessions[0].title).toBe("18 August 2026, 17:03");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("creates, renames, and deletes a category without touching the recording", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+
+      const created = await (await json(base, "POST", "/api/categories", { name: "BUSI 520" })).json();
+      const id = created.categories[0].id;
+      expect(created.categories[0].name).toBe("BUSI 520");
+
+      await json(base, "PATCH", `/api/sessions/2026-08-18-17-03-30`, { categoryId: id });
+      const renamed = await (await json(base, "PATCH", `/api/categories/${id}`, { name: "Distributed" })).json();
+      expect(renamed.categories[0].name).toBe("Distributed");
+
+      const deleted = await (await json(base, "DELETE", `/api/categories/${id}`)).json();
+      expect(deleted.categories[0].id).toBe("uncategorised");
+      expect(deleted.categories[0].sessions[0].id).toBe("2026-08-18-17-03-30");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("400s an unknown category rather than half-applying it", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+      const res = await json(base, "PATCH", "/api/sessions/2026-08-18-17-03-30", { categoryId: "cat_nope" });
+      expect(res.status).toBe(400);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("applies a whole drag as one payload", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+      await seed(dir, "2026-08-17-17-03-30");
+      const created = await (await json(base, "POST", "/api/categories", { name: "BUSI 520" })).json();
+      const id = created.categories[0].id;
+
+      const body = await (
+        await json(base, "PUT", "/api/library/order", {
+          groups: [
+            { categoryId: id, sessionIds: ["2026-08-17-17-03-30", "2026-08-18-17-03-30"] },
+          ],
+        })
+      ).json();
+
+      expect(body.categories[0].sessions.map((s: { id: string }) => s.id)).toEqual([
+        "2026-08-17-17-03-30",
+        "2026-08-18-17-03-30",
+      ]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("400s a malformed order payload", async () => {
+    const { base, server } = await serve();
+    try {
+      expect((await json(base, "PUT", "/api/library/order", { groups: "nope" })).status).toBe(400);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("restores the library to the snapshot taken at start", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+      await json(base, "PATCH", "/api/sessions/2026-08-18-17-03-30", { title: "before" });
+
+      const { snapshotLibrary } = await import("../src/server/library.js");
+      await snapshotLibrary(dir, "stamp-open");
+
+      await json(base, "PATCH", "/api/sessions/2026-08-18-17-03-30", { title: "after" });
+      const body = await (await json(base, "POST", "/api/library/restore")).json();
+      expect(body.categories[0].sessions[0].title).toBe("before");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("409s a restore when no snapshot exists", async () => {
+    const { base, server } = await serve();
+    try {
+      expect((await json(base, "POST", "/api/library/restore")).status).toBe(409);
+    } finally {
+      server.close();
+    }
+  });
+});
