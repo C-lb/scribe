@@ -12,7 +12,15 @@ export function createUploader({ sessionId, chunkSeconds = 20, maxQueueSeconds =
   let dropped = 0;
 
   function report() {
-    if (onStatus) onStatus({ queued: queue.length, dropped });
+    if (!onStatus) return;
+    try {
+      onStatus({ queued: queue.length, dropped });
+    } catch (error) {
+      // The caller's status handler touches the DOM; a broken UI must not
+      // be able to stop an upload or the recording. Same reasoning as the
+      // per-listener guard in EventBroker.publish.
+      console.error("[scribe] status handler failed:", error);
+    }
   }
 
   async function pump() {
