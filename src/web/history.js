@@ -286,8 +286,29 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
     closeMenu();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeMenu({ restoreFocus: true });
+    if (event.key === "Escape") {
+      closeMenu({ restoreFocus: true });
+      return;
+    }
+    // The way into an open menu when focus is still on the row that raised it,
+    // which is the standard menu-button behaviour and the second route in if
+    // the pointer test above ever reads a keyboard press as a pointer.
+    if (menu.hidden || document.activeElement !== menuAnchor) return;
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const buttons = [...menu.querySelectorAll(".menu__item")];
+    (event.key === "ArrowDown" ? buttons[0] : buttons[buttons.length - 1])?.focus();
   });
+  // A right-click elsewhere raises no click of its own in Chrome or Safari, so
+  // without this the menu would sit on screen beside the browser's own until
+  // the next left click. Row and heading right-clicks never reach here: those
+  // stop propagating in openMenu.
+  document.addEventListener("contextmenu", (event) => {
+    if (!menu.contains(event.target)) closeMenu();
+  });
+  // A fixed menu survives both of these and ends up pointing at nothing.
+  window.addEventListener("resize", () => closeMenu());
+  window.addEventListener("blur", () => closeMenu());
   // Scrolling the drawer would leave a fixed menu pointing at nothing. In the
   // capture phase because scroll does not bubble.
   root.addEventListener("scroll", () => closeMenu(), true);
@@ -326,12 +347,21 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
     menu.hidden = false;
     menuOpenedAt = performance.now();
 
-    // Keyboard invocation reports no useful pointer position, so the menu
-    // hangs off the element instead.
+    // Chrome reports the focused element's position for a keyboard-raised
+    // contextmenu, so the pointer coordinates are usable either way. Firefox
+    // reports 0,0, and that is the only case the menu hangs off the element.
     const rect = anchor.getBoundingClientRect();
-    const fromPointer = event.clientX > 0 || event.clientY > 0;
-    place(fromPointer ? event.clientX : rect.left, fromPointer ? event.clientY : rect.bottom);
+    const hasPoint = event.clientX > 0 || event.clientY > 0;
+    place(hasPoint ? event.clientX : rect.left, hasPoint ? event.clientY : rect.bottom);
 
+    // A pointer-raised contextmenu names its pointer; a keyboard-raised one
+    // has none. `detail` cannot do this job: Chrome reports 0 for a real
+    // right-click too, measured. Anything this does not recognise falls to
+    // the keyboard side on purpose, because focusing the first item costs a
+    // mouse user a focus ring while not focusing it costs a keyboard user the
+    // whole menu.
+    const pointer = event.pointerType;
+    const fromPointer = pointer === "mouse" || pointer === "pen" || pointer === "touch";
     if (!fromPointer) menu.querySelector(".menu__item")?.focus();
   }
 
