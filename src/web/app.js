@@ -112,6 +112,14 @@ function setStatus(text) {
 }
 
 async function start() {
+  // A stale final summary from a previous session in the same page load must
+  // not stay exportable once a new recording begins. `recording` flips here
+  // too, so the disabled reason reads "first summary in five minutes" for
+  // the whole gap before mic permission resolves, not the stale "failed".
+  displayedSummary = null;
+  recording = true;
+  exportControls.refresh();
+
   const created = await fetch("/api/sessions", { method: "POST" });
   sessionId = (await created.json()).id;
 
@@ -143,7 +151,6 @@ async function start() {
   recorder = createRecorder({ onChunk: (chunk) => uploader.enqueue(chunk) });
   await recorder.start();
 
-  recording = true;
   displayedTitle = `Scribe ${new Date().toLocaleDateString()}`;
   exportControls.refresh();
 
@@ -191,10 +198,19 @@ async function stop() {
 }
 
 recordButton.addEventListener("click", () => {
-  const action = recordButton.dataset.state === "recording" ? stop : start;
+  const wasStarting = recordButton.dataset.state !== "recording";
+  const action = wasStarting ? start : stop;
   action().catch((error) => {
     console.error(error);
     setStatus(`Something went wrong: ${error.message}`);
     recordButton.disabled = false;
+    // start() flips `recording` before mic permission is even resolved, so a
+    // rejected start() (permission denied, session creation failed, ...)
+    // must flip it back rather than leaving the export controls reading
+    // "recording" for a session that never began.
+    if (wasStarting && recording) {
+      recording = false;
+      exportControls.refresh();
+    }
   });
 });

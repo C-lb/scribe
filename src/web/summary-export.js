@@ -125,6 +125,11 @@ export function createExportControls({ root, getSummary, setStatus }) {
   const saveButton = root.querySelector("#summary-save");
   const shareButton = root.querySelector("#summary-share");
   const summaryEl = document.getElementById("summary");
+  // A tooltip on a disabled button is invisible to keyboard and screen-reader
+  // users: a disabled control drops out of the tab order, so it never gets
+  // focus, so the title never shows. "No dead buttons" means the reason has
+  // to be visible text too, not just a hover hint.
+  const reasonEl = document.getElementById("summary-actions-reason");
 
   shareButton.hidden = typeof navigator.share !== "function";
 
@@ -135,6 +140,8 @@ export function createExportControls({ root, getSummary, setStatus }) {
       button.disabled = !enabled;
       button.title = reason;
     }
+    reasonEl.textContent = reason;
+    reasonEl.hidden = enabled;
   }
 
   copyButton.addEventListener("click", async () => {
@@ -151,7 +158,7 @@ export function createExportControls({ root, getSummary, setStatus }) {
       const selection = window.getSelection();
       selection.removeAllRanges();
       selection.addRange(range);
-      setStatus("Could not reach the clipboard — the summary is selected, press Cmd-C");
+      setStatus("Could not reach the clipboard. The summary is selected, press Cmd-C");
     }
   });
 

@@ -385,9 +385,19 @@ body{
       they are secondary to the record button, which keeps the one accent. ── */
 .pane__head{
   display:flex; align-items:center; justify-content:space-between;
-  gap:var(--s3); margin-bottom:var(--s3);
+  gap:var(--s3);
 }
 .pane__actions{ display:flex; gap:var(--s2); }
+
+/* Sits under the button row rather than beside it, so a long reason never
+   pushes the buttons onto a second line. Same eyebrow-quiet ink as any other
+   secondary line in the pane, no new hue. */
+.actions__reason{
+  font-size:var(--t-cap);
+  line-height:var(--lh-tight);
+  letter-spacing:var(--tr-cap);
+  color:var(--ink-2);
+}
 
 .ghost{
   font:500 var(--t-cap)/var(--lh-flat) var(--font);
