@@ -26,6 +26,28 @@ npm run dev
 
 Open `http://localhost:4747`, grant microphone access, and press "Start recording". Speak normally; the transcript fills in a line at a time and the summary pane updates every few minutes. Press "Stop recording" to end the session and write the final notes.
 
+## The sessions drawer
+
+Every recording Scribe has ever made is listed in the drawer on the left. The button in the header opens and closes it, and it remembers which way you left it across reloads. A session with no name of its own shows its date, like "18 August 2026, 17:03".
+
+- **Reading a past session.** Click a row to load its saved transcript and summary into the panes. This only works while nothing is recording: the transcript pane belongs to the live lecture, so during a recording the status line says "Stop recording to read past sessions" instead. The row for a running recording is marked "Recording" and clicking it takes you back to the live view.
+- **Renaming.** Double-click a row, or right-click it and choose Rename. Type the new name and press Enter, or Escape to abandon it. Clearing the name entirely puts the date back.
+- **Categories.** "New category" adds a heading and drops you straight into naming it. Drag a row onto a heading to file it there, or right-click a row and pick "Move to". Headings rename the same way rows do, and right-clicking one offers "Delete category", which takes two clicks to confirm. Deleting a heading never touches a recording: its sessions fall back to Uncategorised.
+- **Reveal in Finder.** Right-click a row and choose it to open that session's folder.
+- **Restore library.** The names and categories live in `sessions/library.json`, separately from the recordings. Scribe copies that file when it starts, and "Restore library" puts the copy back, so an organising session that went wrong can be undone. It also takes two clicks. Restoring only reaches back to when Scribe was opened; the copies it replaces are kept under `sessions/.library-backups/archive/` if you need an older one by hand.
+
+Nothing in the drawer can delete a recording. The organisation file is the only thing it writes, and losing it would lose names and grouping, never audio or a transcript.
+
+## Exporting a summary
+
+Above the summary pane are three controls, live for whatever the pane is showing, whether that is the running summary of a recording in progress or a past session you have opened:
+
+- **Copy** puts the summary on the clipboard as plain text, ready to paste into a chat window or a notes app.
+- **Save** downloads it as a Markdown file named after the session, like `18-august-2026-1703.md`.
+- **Share** hands it to the operating system's own share sheet, and only appears in browsers that have one.
+
+A control that cannot do anything yet says why, in a line under the buttons rather than only in a tooltip. During a recording with no summary yet, that reason is that the first summary appears after about five minutes. For a past session whose summary failed, it says so.
+
 ## Where sessions are written
 
 Each recording gets its own directory under `~/scribe/sessions/<timestamp>/` (override with `SCRIBE_SESSIONS_DIR`):

@@ -120,9 +120,24 @@ under Uncategorised.
 
 Writes are atomic: the new content goes to a temp file in the same directory and
 is then renamed over the target, so a crash mid-write leaves the previous file
-intact rather than a truncated one. The server is single-process and single-user,
-and all access goes through one module holding an in-memory copy, so no file
-locking is needed.
+intact rather than a truncated one.
+
+There is no file locking, and no in-memory copy of the library either. Every
+request that changes something reads `library.json` from disk, applies its
+change to that value, and writes the whole file back. Nothing is cached between
+requests, so the server can never serve a library that has drifted from what is
+on disk, and an external edit to the file is picked up by the next request
+rather than being overwritten from stale memory.
+
+What this does not give is safety against two writes that overlap. A request
+reads the file, and only later writes it back; another request that reads in
+that window starts from the same value and writes second, so the first one's
+change is gone. In practice that means a rename whose PATCH is still in flight
+when a drag's PUT lands will lose one of the two. The window is a few
+milliseconds of local file IO, one person is driving one browser tab, and the
+cost of losing is one name or one row position, recoverable by doing it again
+or by restoring the library. A write queue would close the window, and is not
+worth the machinery at this size.
 
 ## Server surface
 
