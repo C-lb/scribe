@@ -100,3 +100,88 @@ export async function writeLibrary(
     throw error;
   }
 }
+
+export const UNCATEGORISED_ID = "uncategorised";
+
+export interface SessionFolder {
+  id: string;
+  audioSeconds: number | null;
+}
+
+export interface SessionRow {
+  id: string;
+  title: string;
+  named: boolean;
+  live: boolean;
+  audioSeconds: number | null;
+}
+
+export interface LibraryGroup {
+  id: string;
+  name: string;
+  sessions: SessionRow[];
+}
+
+export interface LibraryView {
+  categories: LibraryGroup[];
+}
+
+/**
+ * The grouping and ordering live here rather than in the browser so they are
+ * testable in Node. Folders are the source of truth for what exists; the
+ * library file only says what the user decided about them.
+ */
+export function mergeLibrary(
+  file: LibraryFile,
+  folders: SessionFolder[],
+  liveId: string | null,
+): LibraryView {
+  const categoryIds = new Set(file.categories.map((c) => c.id));
+  const buckets = new Map<string, SessionRow[]>();
+  for (const category of file.categories) buckets.set(category.id, []);
+  buckets.set(UNCATEGORISED_ID, []);
+
+  // Session order within a bucket comes from the entry; anything unordered
+  // sorts after by id descending, so a fresh recording lands at the top.
+  const ordered = [...folders].sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+
+  for (const folder of ordered) {
+    const entry = file.entries[folder.id] ?? {};
+    const bucketId =
+      entry.categoryId && categoryIds.has(entry.categoryId) ? entry.categoryId : UNCATEGORISED_ID;
+    const title = entry.title?.trim();
+    buckets.get(bucketId)!.push({
+      id: folder.id,
+      title: title || defaultTitle(folder.id),
+      named: Boolean(title),
+      live: folder.id === liveId,
+      audioSeconds: folder.id === liveId ? null : folder.audioSeconds,
+    });
+  }
+
+  for (const rows of buckets.values()) {
+    rows.sort((a, b) => {
+      const orderA = file.entries[a.id]?.order;
+      const orderB = file.entries[b.id]?.order;
+      if (orderA === undefined && orderB === undefined) return 0; // already newest-first
+      if (orderA === undefined) return 1;
+      if (orderB === undefined) return -1;
+      return orderA - orderB;
+    });
+  }
+
+  const categories: LibraryGroup[] = [...file.categories]
+    .sort((a, b) => a.order - b.order)
+    .map((category) => ({
+      id: category.id,
+      name: category.name,
+      sessions: buckets.get(category.id) ?? [],
+    }));
+
+  const loose = buckets.get(UNCATEGORISED_ID)!;
+  if (loose.length > 0) {
+    categories.push({ id: UNCATEGORISED_ID, name: "Uncategorised", sessions: loose });
+  }
+
+  return { categories };
+}
