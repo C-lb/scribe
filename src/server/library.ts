@@ -37,8 +37,7 @@ const MONTHS = [
  * clearing a name in the UI reverts to it.
  */
 export function defaultTitle(id: string): string {
-  const match = SESSION_ID_PATTERN.exec(id);
-  if (!match) return id;
+  if (!isSessionId(id)) return id;
   const [year, month, day, hour, minute] = id.split("-");
   return `${Number(day)} ${MONTHS[Number(month) - 1]} ${year}, ${hour}:${minute}`;
 }
