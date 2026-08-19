@@ -12,6 +12,13 @@ export interface LibraryEntry {
   title?: string;
   categoryId?: string;
   order?: number;
+  /**
+   * The folder stays on disk untouched; this just removes it from the
+   * rendered library. Deleting the entry instead cannot work: mergeLibrary
+   * would rediscover the folder and show it again under Uncategorised on the
+   * very next read.
+   */
+  hidden?: boolean;
 }
 
 export interface LibraryFile {
@@ -146,6 +153,7 @@ export function mergeLibrary(
 
   for (const folder of ordered) {
     const entry = file.entries[folder.id] ?? {};
+    if (entry.hidden) continue;
     const bucketId =
       entry.categoryId && categoryIds.has(entry.categoryId) ? entry.categoryId : UNCATEGORISED_ID;
     const title = entry.title?.trim();
@@ -210,7 +218,7 @@ export function newCategoryId(random: () => number = Math.random): string {
 export function setEntry(
   file: LibraryFile,
   id: string,
-  patch: { title?: string | null; categoryId?: string | null },
+  patch: { title?: string | null; categoryId?: string | null; hidden?: boolean | null },
 ): LibraryFile {
   if (!isSessionId(id)) throw new Error(`invalid session id: ${id}`);
   const next = clone(file);
@@ -229,6 +237,13 @@ export function setEntry(
       requireCategory(next, patch.categoryId);
       entry.categoryId = patch.categoryId;
     }
+  }
+
+  if (patch.hidden !== undefined) {
+    // true sets the flag; false or null removes it, so the entry does not
+    // accumulate a dead `hidden: false`.
+    if (patch.hidden) entry.hidden = true;
+    else delete entry.hidden;
   }
 
   next.entries[id] = entry;

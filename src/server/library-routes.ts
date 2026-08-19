@@ -181,10 +181,13 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
     const { id } = req.params;
     if (!isSessionId(id)) return res.status(400).json({ error: "invalid session id" });
 
-    const patch: { title?: string | null; categoryId?: string | null } = {};
+    const patch: { title?: string | null; categoryId?: string | null; hidden?: boolean | null } = {};
     if ("title" in req.body) patch.title = req.body.title === null ? null : String(req.body.title);
     if ("categoryId" in req.body) {
       patch.categoryId = req.body.categoryId === null ? null : String(req.body.categoryId);
+    }
+    if ("hidden" in req.body) {
+      patch.hidden = req.body.hidden === null ? null : Boolean(req.body.hidden);
     }
     await mutate(res, (file) => setEntry(file, id, patch));
   });

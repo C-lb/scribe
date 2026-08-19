@@ -232,6 +232,25 @@ describe("library writes", () => {
     }
   });
 
+  it("hides a session so it no longer appears, without touching its folder", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+
+      const res = await json(base, "PATCH", "/api/sessions/2026-08-18-17-03-30", { hidden: true });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.categories).toEqual([]);
+
+      const stat = await import("node:fs/promises").then((m) =>
+        m.stat(path.join(dir, "2026-08-18-17-03-30")),
+      );
+      expect(stat.isDirectory()).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
+
   it("400s an unknown category rather than half-applying it", async () => {
     const { base, dir, server } = await serve();
     try {

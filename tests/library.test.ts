@@ -67,6 +67,21 @@ describe("readLibrary", () => {
 });
 
 describe("writeLibrary", () => {
+  it("keeps a hidden entry, since its folder still exists on disk", async () => {
+    const d = await dir();
+    await writeLibrary(
+      d,
+      {
+        version: 1,
+        categories: [],
+        entries: { "2026-08-18-17-03-30": { title: "shh", hidden: true } },
+      },
+      ["2026-08-18-17-03-30"],
+    );
+    const file = await readLibrary(d);
+    expect(file.entries["2026-08-18-17-03-30"]).toMatchObject({ hidden: true });
+  });
+
   it("prunes entries whose session folder has vanished", async () => {
     const d = await dir();
     await writeLibrary(
@@ -193,6 +208,15 @@ describe("mergeLibrary", () => {
     expect(row.audioSeconds).toBeNull();
   });
 
+  it("omits a hidden session entirely, leaving its folder untouched on disk", () => {
+    const view = mergeLibrary(
+      { version: 1, categories: [], entries: { "2026-08-18-17-03-30": { hidden: true } } },
+      [folder("2026-08-18-17-03-30")],
+      null,
+    );
+    expect(view.categories).toHaveLength(0);
+  });
+
   it("drops Uncategorised entirely when every session has a home", () => {
     const view = mergeLibrary(
       {
@@ -250,6 +274,23 @@ describe("setEntry", () => {
   it("sets a title", () => {
     const file = setEntry(base(), "2026-08-17-17-03-30", { title: "Paxos" });
     expect(file.entries["2026-08-17-17-03-30"].title).toBe("Paxos");
+  });
+
+  it("hides a session", () => {
+    const file = setEntry(base(), "2026-08-18-17-03-30", { hidden: true });
+    expect(file.entries["2026-08-18-17-03-30"].hidden).toBe(true);
+  });
+
+  it("false removes the hidden flag rather than storing false", () => {
+    const hidden = setEntry(base(), "2026-08-18-17-03-30", { hidden: true });
+    const shown = setEntry(hidden, "2026-08-18-17-03-30", { hidden: false });
+    expect(shown.entries["2026-08-18-17-03-30"]).not.toHaveProperty("hidden");
+  });
+
+  it("null removes the hidden flag rather than storing null", () => {
+    const hidden = setEntry(base(), "2026-08-18-17-03-30", { hidden: true });
+    const shown = setEntry(hidden, "2026-08-18-17-03-30", { hidden: null });
+    expect(shown.entries["2026-08-18-17-03-30"]).not.toHaveProperty("hidden");
   });
 
   it("clearing a title removes it so the date default returns", () => {
