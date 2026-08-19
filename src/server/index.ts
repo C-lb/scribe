@@ -143,7 +143,12 @@ if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1])))
       );
     }
 
-    createApp(config, deps).listen(config.port, () => {
+    // Loopback only, deliberately. This server has no authentication, reads and
+    // writes a directory of the user's lecture recordings, and has one route
+    // that asks the OS to open a folder. Express's default binds every
+    // interface, which on a café network hands all of that to whoever else is
+    // on the wifi. Nothing here is meant to leave the machine.
+    createApp(config, deps).listen(config.port, "127.0.0.1", () => {
       console.log(`[scribe] listening on http://localhost:${config.port}`);
     });
   })();
