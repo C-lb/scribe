@@ -8,7 +8,7 @@
  * model that can drift from the folder on disk.
  */
 
-import { attachDragAndDrop, orderPayload } from "./dnd.js";
+import { attachDragAndDrop, categoryOrderPayload, orderPayload } from "./dnd.js";
 
 function formatDuration(seconds) {
   if (seconds == null) return "";
@@ -111,10 +111,20 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
     heading.className = "cat__name";
     heading.textContent = category.name;
     // "Uncategorised" is not a heading the user made, so it is not one they
-    // can rename. Every other heading is.
+    // can rename, drag, or reorder. Every other heading is.
     if (category.id !== "uncategorised") {
-      heading.title = "Double-click to rename, right-click for more";
+      heading.title = "Drag to reorder, double-click to rename, right-click for more";
+      heading.draggable = true;
+      // Focusable so the browser's own Menu key and Shift+F10 have somewhere to
+      // raise the heading menu from, which is where the keyboard route to
+      // reordering lives. Rows already take focus for the same reason.
+      heading.tabIndex = 0;
       heading.addEventListener("dblclick", () => renameCategory(category.id));
+      heading.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        renameCategory(category.id);
+      });
       heading.addEventListener("contextmenu", (event) =>
         openMenu(event, heading, categoryItems(category)),
       );
@@ -213,7 +223,25 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
         await refresh().catch(() => {});
       }
     },
+    onDropCategory: (drop) => moveCategoryTo(drop),
   });
+
+  /**
+   * One route for both ways a heading moves, the drag and the two menu items,
+   * so the payload is built in one place and the failure is reported once.
+   */
+  async function moveCategoryTo(drop) {
+    try {
+      applyPayload(
+        await api("PUT", "/api/library/order", categoryOrderPayload(library.categories, drop)),
+      );
+    } catch (error) {
+      setStatus(`Could not move that category: ${error.message}`);
+      // The headings are still sitting where the drag left them on screen, so
+      // the list is put back to whatever the server actually holds.
+      await refresh().catch(() => {});
+    }
+  }
 
   /* ── Renaming ──────────────────────────────────────────────────────────── */
 
@@ -369,6 +397,37 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
     }
   });
 
+  /**
+   * A menu item that wants a second click, the same shape the restore control
+   * uses, because confirm() blocks the page and nothing else here does.
+   *
+   * Arming is a moment, not a mode: the menu is rebuilt from scratch every time
+   * it opens and closes on any click outside it, so an armed item that is not
+   * clicked again is gone by the next interaction. Choosing a different item in
+   * the same menu disarms this one for the same reason, since that click closes
+   * the menu too.
+   */
+  function confirmItem({ label, armedLabel, act }) {
+    return {
+      label,
+      run: (button) => {
+        if (button.dataset.armed !== "yes") {
+          button.dataset.armed = "yes";
+          button.textContent = armedLabel;
+          // The label just grew, so the menu is placed again against its own
+          // corner rather than being allowed to hang off the viewport.
+          place(
+            Number.parseFloat(menu.style.left) || 0,
+            Number.parseFloat(menu.style.top) || 0,
+          );
+          return false;
+        }
+        act();
+        return true;
+      },
+    };
+  }
+
   function sessionItems(session, category) {
     const items = [{ label: "Rename", run: () => renameSession(session) }];
 
@@ -407,27 +466,27 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
   }
 
   function categoryItems(category) {
-    return [
-      { label: "Rename", run: () => renameCategory(category.id) },
-      {
-        // Two-step confirm, the same shape the restore control uses, because
-        // confirm() blocks the page and nothing else here does.
+    const items = [{ label: "Rename", run: () => renameCategory(category.id) }];
+
+    // The keyboard's way to do what a heading drag does. Uncategorised is not
+    // in this list at all, so it is never a position either item can reach.
+    const ids = library.categories.map((c) => c.id).filter((id) => id !== "uncategorised");
+    const at = ids.indexOf(category.id);
+    if (at > 0) {
+      items.push({ label: "Move up", run: () => moveCategoryTo({ categoryId: category.id, index: at - 1 }) });
+    }
+    if (at >= 0 && at < ids.length - 1) {
+      items.push({ label: "Move down", run: () => moveCategoryTo({ categoryId: category.id, index: at + 1 }) });
+    }
+
+    items.push(
+      confirmItem({
         label: "Delete category",
-        run: (button) => {
-          if (button.dataset.armed !== "yes") {
-            button.dataset.armed = "yes";
-            button.textContent = "Click again to delete";
-            place(
-              Number.parseFloat(menu.style.left) || 0,
-              Number.parseFloat(menu.style.top) || 0,
-            );
-            return false;
-          }
-          deleteCategory(category.id);
-          return true;
-        },
-      },
-    ];
+        armedLabel: "Click again to delete",
+        act: () => deleteCategory(category.id),
+      }),
+    );
+    return items;
   }
 
   /** Never touches recordings: the sessions fall back to Uncategorised. */
