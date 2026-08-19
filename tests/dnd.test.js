@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { insertionIndex, orderPayload } from "../src/web/dnd.js";
+import { categoryOrderPayload, insertionIndex, orderPayload } from "../src/web/dnd.js";
 
 // Three 40px rows starting at y=100, as a real sidebar would report them.
 const rows = [
@@ -121,5 +121,43 @@ describe("orderPayload", () => {
     });
     expect(group(payload, null)).toEqual(["e"]);
     expect(group(payload, "cat_lectures")).toEqual(["a", "b", "c"]);
+  });
+});
+
+// Four named categories plus the implicit bucket, as the drawer renders them.
+const headings = () => [
+  { id: "cat_a", name: "A", sessions: [] },
+  { id: "cat_b", name: "B", sessions: [] },
+  { id: "cat_c", name: "C", sessions: [] },
+  { id: "cat_d", name: "D", sessions: [] },
+  { id: "uncategorised", name: "Uncategorised", sessions: sessions("e") },
+];
+
+describe("categoryOrderPayload", () => {
+  it("moves a heading to the front", () => {
+    const payload = categoryOrderPayload(headings(), { categoryId: "cat_c", index: 0 });
+    expect(payload.categoryIds).toEqual(["cat_c", "cat_a", "cat_b", "cat_d"]);
+  });
+
+  it("moves a heading to the back", () => {
+    const payload = categoryOrderPayload(headings(), { categoryId: "cat_a", index: 3 });
+    expect(payload.categoryIds).toEqual(["cat_b", "cat_c", "cat_d", "cat_a"]);
+  });
+
+  it("moves a heading into the middle", () => {
+    const payload = categoryOrderPayload(headings(), { categoryId: "cat_a", index: 2 });
+    expect(payload.categoryIds).toEqual(["cat_b", "cat_c", "cat_a", "cat_d"]);
+  });
+
+  // Uncategorised is implicit and always sorts last, so the server must never
+  // be handed it as a category to renumber.
+  it("leaves Uncategorised out of the payload even when it is on screen", () => {
+    const payload = categoryOrderPayload(headings(), { categoryId: "cat_d", index: 1 });
+    expect(payload.categoryIds).not.toContain("uncategorised");
+    expect(payload.categoryIds).toEqual(["cat_a", "cat_d", "cat_b", "cat_c"]);
+  });
+
+  it("moves no session, so it sends no groups", () => {
+    expect(categoryOrderPayload(headings(), { categoryId: "cat_b", index: 0 }).groups).toEqual([]);
   });
 });
