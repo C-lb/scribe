@@ -438,6 +438,16 @@ describe("applyOrder", () => {
       ).toThrow(/unknown category/);
     });
 
+    it("rejects a duplicate id rather than silently inflating the category list, changing nothing", () => {
+      const input = threeCategories();
+      expect(() =>
+        applyOrder(input, { groups: [], categoryIds: ["cat_a", "cat_a", "cat_b"] }),
+      ).toThrow(/duplicate category/);
+      // The all-or-nothing rule: rejection must not have touched the input.
+      expect(input.categories).toHaveLength(3);
+      expect(input.categories.find((c) => c.id === "cat_a")!.order).toBe(0);
+    });
+
     // Ids omitted from the array are not dropped: they keep a stable relative
     // position, sorted after every listed id. This means a partial drag
     // payload (say, from a UI bug) never orphans a category out of view.

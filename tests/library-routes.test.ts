@@ -343,6 +343,34 @@ describe("library writes", () => {
     }
   });
 
+  it("restoring un-hides a session hidden since the snapshot was taken", async () => {
+    // The design's whole justification for having no un-hide affordance in the
+    // UI is that restore-to-launch-snapshot reinstates it. That has to hold.
+    const { base, dir, server } = await serve();
+    try {
+      await seed(dir, "2026-08-18-17-03-30");
+      // snapshotLibrary needs an existing library.json to snapshot from, same
+      // as the "restores the library" test above.
+      await json(base, "PATCH", "/api/sessions/2026-08-18-17-03-30", { title: "before" });
+
+      const { snapshotLibrary } = await import("../src/server/library.js");
+      await snapshotLibrary(dir, "stamp-open");
+
+      const hidden = await (
+        await json(base, "PATCH", "/api/sessions/2026-08-18-17-03-30", { hidden: true })
+      ).json();
+      expect(hidden.categories).toEqual([]);
+
+      const restored = await (await json(base, "POST", "/api/library/restore")).json();
+      const ids = restored.categories.flatMap((c: { sessions: { id: string }[] }) =>
+        c.sessions.map((s) => s.id),
+      );
+      expect(ids).toEqual(["2026-08-18-17-03-30"]);
+    } finally {
+      server.close();
+    }
+  });
+
   it("409s a restore when no snapshot exists", async () => {
     const { base, server } = await serve();
     try {

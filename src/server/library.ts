@@ -312,7 +312,12 @@ export function applyOrder(file: LibraryFile, payload: OrderPayload): LibraryFil
     }
   }
   if (payload.categoryIds) {
-    for (const id of payload.categoryIds) requireCategory(file, id);
+    const seen = new Set<string>();
+    for (const id of payload.categoryIds) {
+      requireCategory(file, id);
+      if (seen.has(id)) throw new Error(`duplicate category id: ${id}`);
+      seen.add(id);
+    }
   }
 
   const next = clone(file);
