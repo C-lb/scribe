@@ -139,8 +139,12 @@ export function attachDragAndDrop({
         pointerY,
         // The heading's own rectangle, not the whole section's: the drop lands
         // where the name is, so a tall category does not swallow the slot after
-        // it just by holding more rows.
-        sections.map((section) => section.querySelector(".cat__name").getBoundingClientRect()),
+        // it just by holding more rows. A heading being renamed is an input
+        // standing where the name was, and it sits first in the section either
+        // way, so the slot keeps its place rather than vanishing mid-drag.
+        sections.map((section) =>
+          section.querySelector(".cat__name, .inline-edit").getBoundingClientRect(),
+        ),
       ),
     };
   }
