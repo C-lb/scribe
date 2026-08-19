@@ -445,7 +445,38 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
     }
 
     items.push({ label: "Reveal in Finder", run: () => reveal(session) });
+
+    // Never offered on the session being recorded: hiding it would take the
+    // row out from under the user mid-lecture, and that row is also the only
+    // route back to the live panes.
+    if (!session.live) {
+      items.push(
+        confirmItem({
+          label: "Hide from library",
+          armedLabel: "Click again to hide",
+          act: () => hideSession(session),
+        }),
+      );
+    }
     return items;
+  }
+
+  /**
+   * Takes the row out of the drawer and leaves the recording alone. There is no
+   * un-hide here on purpose: nothing is destroyed, the folder keeps everything,
+   * and "Restore library to when Scribe opened" already brings back anything
+   * hidden since launch.
+   */
+  async function hideSession(session) {
+    try {
+      applyPayload(await api("PATCH", `/api/sessions/${session.id}`, { hidden: true }));
+      // Names where the recording still is, so it is plain that the row went
+      // and the audio did not.
+      setStatus(`Hidden. The recording is still in sessions/${session.id}.`);
+    } catch (error) {
+      setStatus(`Could not hide that session: ${error.message}`);
+      await refresh().catch(() => {});
+    }
   }
 
   async function moveSession(session, categoryId) {
