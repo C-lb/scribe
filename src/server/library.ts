@@ -294,6 +294,9 @@ export function deleteCategory(file: LibraryFile, id: string): LibraryFile {
 
 export interface OrderPayload {
   groups: Array<{ categoryId: string | null; sessionIds: string[] }>;
+  /** A completed heading drag. Every id must be a known category; Uncategorised
+   *  is implicit and never appears here. Absent means "don't touch category order". */
+  categoryIds?: string[];
 }
 
 /**
@@ -308,6 +311,9 @@ export function applyOrder(file: LibraryFile, payload: OrderPayload): LibraryFil
       if (!isSessionId(id)) throw new Error(`invalid session id: ${id}`);
     }
   }
+  if (payload.categoryIds) {
+    for (const id of payload.categoryIds) requireCategory(file, id);
+  }
 
   const next = clone(file);
   for (const group of payload.groups) {
@@ -319,6 +325,22 @@ export function applyOrder(file: LibraryFile, payload: OrderPayload): LibraryFil
       next.entries[id] = entry;
     });
   }
+
+  if (payload.categoryIds) {
+    // Ids omitted from the array are not dropped: they keep a stable relative
+    // position, sorted by their existing order, after every listed id. That
+    // way a partial payload never orphans a category out of view.
+    const listed = payload.categoryIds;
+    const listedSet = new Set(listed);
+    const omitted = [...next.categories]
+      .sort((a, b) => a.order - b.order)
+      .filter((c) => !listedSet.has(c.id))
+      .map((c) => c.id);
+    const finalOrder = [...listed, ...omitted];
+    const byId = new Map(next.categories.map((c) => [c.id, c]));
+    next.categories = finalOrder.map((id, index) => ({ ...byId.get(id)!, order: index }));
+  }
+
   return next;
 }
 

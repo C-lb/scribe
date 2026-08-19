@@ -296,6 +296,36 @@ describe("library writes", () => {
     }
   });
 
+  it("reorders categories via categoryIds in the bulk order payload", async () => {
+    const { base, server } = await serve();
+    try {
+      const a = await (await json(base, "POST", "/api/categories", { name: "First" })).json();
+      const idA = a.categories[0].id;
+      const b = await (await json(base, "POST", "/api/categories", { name: "Second" })).json();
+      const idB = b.categories.find((c: { name: string }) => c.name === "Second").id;
+
+      const body = await (
+        await json(base, "PUT", "/api/library/order", { groups: [], categoryIds: [idB, idA] })
+      ).json();
+
+      expect(body.categories.map((c: { id: string }) => c.id)).toEqual([idB, idA]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("400s a malformed categoryIds without applying anything", async () => {
+    const { base, server } = await serve();
+    try {
+      const before = await (
+        await json(base, "PUT", "/api/library/order", { groups: [], categoryIds: "nope" })
+      );
+      expect(before.status).toBe(400);
+    } finally {
+      server.close();
+    }
+  });
+
   it("restores the library to the snapshot taken at start", async () => {
     const { base, dir, server } = await serve();
     try {

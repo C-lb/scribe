@@ -219,11 +219,18 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
         return res.status(400).json({ error: "each group needs sessionIds" });
       }
     }
+
+    const categoryIdsRaw = req.body?.categoryIds;
+    if (categoryIdsRaw !== undefined && !Array.isArray(categoryIdsRaw)) {
+      return res.status(400).json({ error: "categoryIds must be an array" });
+    }
+
     const payload: OrderPayload = {
       groups: groups.map((g) => ({
         categoryId: g.categoryId == null ? null : String(g.categoryId),
         sessionIds: g.sessionIds.map(String),
       })),
+      ...(categoryIdsRaw !== undefined ? { categoryIds: categoryIdsRaw.map(String) } : {}),
     };
     await mutate(res, (file) => applyOrder(file, payload));
   });

@@ -262,6 +262,7 @@ describe("mergeLibrary", () => {
 
 import {
   setEntry, createCategory, updateCategory, deleteCategory, applyOrder, newCategoryId,
+  type LibraryFile,
 } from "../src/server/library.js";
 
 const base = () => ({
@@ -399,6 +400,68 @@ describe("applyOrder", () => {
     expect(() =>
       applyOrder(base(), { groups: [{ categoryId: null, sessionIds: ["../etc/passwd"] }] }),
     ).toThrow(/session id/);
+  });
+
+  describe("categoryIds", () => {
+    const threeCategories = () => {
+      let file: LibraryFile = base(); // has cat_a at order 0
+      file = createCategory(file, "BUSI 530", "cat_b");
+      file = createCategory(file, "BUSI 540", "cat_c");
+      return file;
+    };
+
+    it("renumbers categories to the array's index order", () => {
+      const file = applyOrder(threeCategories(), {
+        groups: [],
+        categoryIds: ["cat_c", "cat_a", "cat_b"],
+      });
+      expect(file.categories.map((c) => [c.id, c.order])).toEqual(
+        expect.arrayContaining([
+          ["cat_c", 0],
+          ["cat_a", 1],
+          ["cat_b", 2],
+        ]),
+      );
+    });
+
+    it("rejects the whole payload if any id is unknown, changing nothing", () => {
+      const input = threeCategories();
+      expect(() =>
+        applyOrder(input, { groups: [], categoryIds: ["cat_a", "cat_nope"] }),
+      ).toThrow(/unknown category/);
+      expect(input.categories.find((c) => c.id === "cat_a")!.order).toBe(0);
+    });
+
+    it("rejects Uncategorised as an id, since it is not a real category", () => {
+      expect(() =>
+        applyOrder(threeCategories(), { groups: [], categoryIds: ["cat_a", "uncategorised"] }),
+      ).toThrow(/unknown category/);
+    });
+
+    // Ids omitted from the array are not dropped: they keep a stable relative
+    // position, sorted after every listed id. This means a partial drag
+    // payload (say, from a UI bug) never orphans a category out of view.
+    it("keeps omitted ids in their existing relative order, after the listed ones", () => {
+      const file = applyOrder(threeCategories(), {
+        groups: [],
+        categoryIds: ["cat_b"],
+      });
+      // cat_b is listed first; cat_a and cat_c were not listed and keep their
+      // existing relative order (cat_a was order 0, cat_c was order 2) after it.
+      expect(file.categories.map((c) => c.id)).toEqual(["cat_b", "cat_a", "cat_c"]);
+      expect(file.categories.map((c) => c.order)).toEqual([0, 1, 2]);
+    });
+
+    it("leaves category order untouched when categoryIds is absent", () => {
+      const file = applyOrder(threeCategories(), { groups: [] });
+      expect(file.categories.map((c) => [c.id, c.order])).toEqual(
+        expect.arrayContaining([
+          ["cat_a", 0],
+          ["cat_b", 1],
+          ["cat_c", 2],
+        ]),
+      );
+    });
   });
 });
 
