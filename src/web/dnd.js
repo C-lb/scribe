@@ -124,27 +124,30 @@ export function attachDragAndDrop({
    * skipped so it is never its own neighbour, exactly as rows are.
    */
   function categorySlots() {
-    return [...listEl.querySelectorAll(".cat")].filter(
-      (section) =>
-        section.dataset.categoryId !== "uncategorised" &&
-        section.dataset.categoryId !== draggingId,
-    );
+    return [...listEl.querySelectorAll(".cat")]
+      .filter(
+        (section) =>
+          section.dataset.categoryId !== "uncategorised" &&
+          section.dataset.categoryId !== draggingId,
+      )
+      // The heading's own box, not the whole section's: the drop lands where
+      // the name is, so a tall category does not swallow the slot after it just
+      // by holding more rows. A heading being renamed is an input standing
+      // where the name was, and it sits first in the section either way.
+      .map((section) => ({ section, label: section.querySelector(".cat__name, .inline-edit") }))
+      // Nothing renders a section without one of those today. Saying so here
+      // rather than trusting it means a future section that has neither costs
+      // one misplaced slot, not a null dereference that kills the gesture.
+      .filter((slot) => slot.label);
   }
 
   function categoryTargetIndex(pointerY) {
-    const sections = categorySlots();
+    const slots = categorySlots();
     return {
-      sections,
+      sections: slots.map((slot) => slot.section),
       index: insertionIndex(
         pointerY,
-        // The heading's own rectangle, not the whole section's: the drop lands
-        // where the name is, so a tall category does not swallow the slot after
-        // it just by holding more rows. A heading being renamed is an input
-        // standing where the name was, and it sits first in the section either
-        // way, so the slot keeps its place rather than vanishing mid-drag.
-        sections.map((section) =>
-          section.querySelector(".cat__name, .inline-edit").getBoundingClientRect(),
-        ),
+        slots.map((slot) => slot.label.getBoundingClientRect()),
       ),
     };
   }
@@ -229,7 +232,8 @@ export function attachDragAndDrop({
       const { sections, index } = categoryTargetIndex(event.clientY);
       for (const el of listEl.querySelectorAll(".insert")) el.remove();
       const line = document.createElement("div");
-      line.className = "insert";
+      // The modifier gives back the list gap the line would otherwise open.
+      line.className = "insert insert--cat";
       // Past the last real heading the line stops in front of Uncategorised
       // rather than after it, which is the same thing the payload says.
       listEl.insertBefore(line, sections[index] ?? uncategorisedSection() ?? null);

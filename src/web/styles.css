@@ -597,6 +597,11 @@ body[data-sidebar="open"] .drawer{ display:flex; }
   border-radius:1px;
   pointer-events:none;
 }
+/* Between headings the list's own gap is --s5, so a line added as a flex child
+   would shove everything below it down by a whole gap on every slot change.
+   The negative margin gives back exactly what the line and its gap take, so it
+   sits inside the gap instead of opening a new one. */
+.insert--cat{ margin:calc((var(--s5) + 2px) / -2) 0; }
 
 /* ── Row and heading context menu ─────────────────────────────────────────
    Sits above the drawer, so it takes the top surface plus the deeper shadow
@@ -638,6 +643,13 @@ body[data-sidebar="open"] .drawer{ display:flex; }
 .menu__item:hover{ background:var(--surface-2); }
 .menu__item:active{ background:var(--surface-3); }
 .menu__item:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
-/* Armed, waiting on the second click. Red carries the meaning; nothing else
-   in this menu is coloured. */
+/* Armed, waiting on the second click. Red carries the meaning, and it is kept
+   for the one item that removes something; nothing else in this menu is
+   coloured. An item that destroys nothing arms in ink on the hover surface, so
+   it still reads as held mid-action without borrowing the delete red. */
 .menu__item[data-armed="yes"]{ color:var(--danger); font-weight:600; }
+.menu__item[data-armed="yes"][data-tone="quiet"]{
+  color:var(--ink);
+  background:var(--surface-2);
+  font-weight:600;
+}

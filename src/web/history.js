@@ -95,6 +95,10 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
     }
     restoreButton.hidden = !library.canRestore;
     disarmRestore();
+    // The rows and headings the menu was raised from are gone, so an open menu
+    // would sit on screen anchored to a detached node, and an armed item in it
+    // would still be armed. Arming is a moment here too.
+    closeMenu();
   }
 
   /** Whatever the last skipped repaint was waiting to draw, draw it now. */
@@ -401,18 +405,23 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
    * A menu item that wants a second click, the same shape the restore control
    * uses, because confirm() blocks the page and nothing else here does.
    *
+   * `tone` says how the armed state reads. Red is the danger tone and belongs
+   * to the one item that removes something; an item that removes nothing gets
+   * the quiet tone instead, so the colour keeps meaning what it says.
+   *
    * Arming is a moment, not a mode: the menu is rebuilt from scratch every time
    * it opens and closes on any click outside it, so an armed item that is not
    * clicked again is gone by the next interaction. Choosing a different item in
    * the same menu disarms this one for the same reason, since that click closes
    * the menu too.
    */
-  function confirmItem({ label, armedLabel, act }) {
+  function confirmItem({ label, armedLabel, act, tone = "danger" }) {
     return {
       label,
       run: (button) => {
         if (button.dataset.armed !== "yes") {
           button.dataset.armed = "yes";
+          button.dataset.tone = tone;
           button.textContent = armedLabel;
           // The label just grew, so the menu is placed again against its own
           // corner rather than being allowed to hang off the viewport.
@@ -454,11 +463,23 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
         confirmItem({
           label: "Hide from library",
           armedLabel: "Click again to hide",
+          // Nothing is destroyed here, so the armed state does not borrow the
+          // delete red.
+          tone: "quiet",
           act: () => hideSession(session),
         }),
       );
     }
     return items;
+  }
+
+  /** Whatever the library holds for that id right now, or null if it is gone. */
+  function currentSession(id) {
+    for (const category of library.categories) {
+      const found = category.sessions.find((s) => s.id === id);
+      if (found) return found;
+    }
+    return null;
   }
 
   /**
@@ -468,6 +489,21 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
    * hidden since launch.
    */
   async function hideSession(session) {
+    // The menu was built from a render-time row, and a repaint held back by an
+    // open rename or a drag in flight can leave that row older than the
+    // library. Recording state is the one field where acting on the stale copy
+    // matters: hiding the live row takes it out from under the user and takes
+    // the only route back to the live panes with it. So it is read fresh, the
+    // same way renameSession looks its node up fresh rather than capturing it.
+    const current = currentSession(session.id);
+    if (!current) {
+      setStatus("That session is no longer in the library");
+      return;
+    }
+    if (current.live) {
+      setStatus("Stop recording before hiding that session");
+      return;
+    }
     try {
       applyPayload(await api("PATCH", `/api/sessions/${session.id}`, { hidden: true }));
       // Names where the recording still is, so it is plain that the row went
