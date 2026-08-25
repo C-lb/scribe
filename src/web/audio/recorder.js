@@ -1,10 +1,24 @@
 import { createDownsampler } from "./resample.js";
 import { encodeWav } from "./wav.js";
 import { findCutPoint } from "./chunker.js";
+import { rms, isSilent } from "./level.js";
 
 const TARGET_RATE = 16000;
 
-export function createRecorder({ chunkSeconds = 20, onChunk }) {
+/** How often the live level is reported. Fast enough to look live, slow enough
+ *  not to lay out the meter on every 128-frame render quantum. */
+const LEVEL_INTERVAL_MS = 100;
+
+/**
+ * @param onChunk    called per chunk; the chunk carries `level` and `silent`
+ *                   so the caller can decide not to upload it.
+ * @param onLevel    called ~10x/second with the current input RMS, for a meter.
+ * @param onDeviceLost   called when the capture track dies under us: unplugged,
+ *                   muted at the OS, or taken by another application. The
+ *                   recorder does NOT stop itself, because a lecture that keeps
+ *                   running is recoverable and one that stopped is not.
+ */
+export function createRecorder({ chunkSeconds = 20, onChunk, onLevel, onDeviceLost }) {
   let context = null;
   let stream = null;
   let node = null;
@@ -12,6 +26,45 @@ export function createRecorder({ chunkSeconds = 20, onChunk }) {
   let index = 0;
   let emittedSamples = 0;
   let downsampler = null;
+  let lastLevelAt = 0;
+  let deviceLost = false;
+
+  /** Guards every callback out of this module. A handler that throws must not
+   *  be able to take down the capture loop, same rule as the worklet handler. */
+  function safely(callback, ...args) {
+    if (!callback) return;
+    try {
+      callback(...args);
+    } catch (error) {
+      console.error("[scribe] recorder callback failed", error);
+    }
+  }
+
+  function reportLevel(samples) {
+    if (!onLevel) return;
+    const now = Date.now();
+    if (now - lastLevelAt < LEVEL_INTERVAL_MS) return;
+    lastLevelAt = now;
+    safely(onLevel, rms(samples));
+  }
+
+  function reportDeviceLost(reason) {
+    // Once, not once per event: a single unplug fires `mute` and `ended` on the
+    // track and a `devicechange` on the device list, and three red banners for
+    // one cable is noise.
+    if (deviceLost) return;
+    deviceLost = true;
+    safely(onDeviceLost, { reason });
+  }
+
+  function watchTrack(track) {
+    if (!track) return;
+    track.addEventListener("ended", () => reportDeviceLost("ended"));
+    track.addEventListener("mute", () => reportDeviceLost("muted"));
+    track.addEventListener("unmute", () => {
+      deviceLost = false;
+    });
+  }
 
   const minSeconds = Math.max(1, chunkSeconds - 5);
   const maxSeconds = chunkSeconds + 5;
@@ -36,7 +89,15 @@ export function createRecorder({ chunkSeconds = 20, onChunk }) {
       emittedSamples += slice.length;
       const endMs = (emittedSamples / TARGET_RATE) * 1000;
 
-      onChunk({ index, startMs, endMs, wav: encodeWav(slice, TARGET_RATE) });
+      const level = rms(slice);
+      onChunk({
+        index,
+        startMs,
+        endMs,
+        wav: encodeWav(slice, TARGET_RATE),
+        level,
+        silent: isSilent(slice),
+      });
     }
   }
 
@@ -56,6 +117,8 @@ export function createRecorder({ chunkSeconds = 20, onChunk }) {
       context = new AudioContext();
       await context.audioWorklet.addModule("/audio/worklet.js");
 
+      for (const track of stream.getAudioTracks()) watchTrack(track);
+
       const source = context.createMediaStreamSource(stream);
       node = new AudioWorkletNode(context, "tap");
       downsampler = createDownsampler(context.sampleRate, TARGET_RATE);
@@ -66,6 +129,9 @@ export function createRecorder({ chunkSeconds = 20, onChunk }) {
       // never be able to throw and take the recording down mid-lecture.
       node.port.onmessage = (event) => {
         try {
+          // Metered before the downsampler so a broken resample cannot make the
+          // meter read silent, which would send the user hunting the wrong fault.
+          reportLevel(event.data);
           append(downsampler.push(event.data));
           drainChunks();
         } catch (error) {
@@ -91,7 +157,14 @@ export function createRecorder({ chunkSeconds = 20, onChunk }) {
         const startMs = (emittedSamples / TARGET_RATE) * 1000;
         emittedSamples += buffer.length;
         const endMs = (emittedSamples / TARGET_RATE) * 1000;
-        onChunk({ index, startMs, endMs, wav: encodeWav(buffer, TARGET_RATE) });
+        onChunk({
+          index,
+          startMs,
+          endMs,
+          wav: encodeWav(buffer, TARGET_RATE),
+          level: rms(buffer),
+          silent: isSilent(buffer),
+        });
         buffer = new Float32Array(0);
       }
 
@@ -99,6 +172,8 @@ export function createRecorder({ chunkSeconds = 20, onChunk }) {
       stream = null;
       node = null;
       downsampler = null;
+      deviceLost = false;
+      safely(onLevel, 0);
     },
   };
 }

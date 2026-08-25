@@ -2,6 +2,8 @@ import { createRecorder } from "./audio/recorder.js";
 import { createUploader } from "./upload.js";
 import { createExportControls } from "./summary-export.js";
 import { createHistory } from "./history.js";
+import { createBanner } from "./banner.js";
+import { createSilenceTracker, meterPosition } from "./audio/level.js";
 
 const recordButton = document.getElementById("record");
 const transcriptEl = document.getElementById("transcript");
@@ -9,6 +11,47 @@ const summaryEl = document.getElementById("summary");
 const statusEl = document.getElementById("status");
 const timerEl = document.getElementById("timer");
 const jumpButton = document.getElementById("jump");
+const meterEl = document.getElementById("meter");
+const meterTrackEl = document.getElementById("meter-track");
+const meterFillEl = document.getElementById("meter-fill");
+
+const banner = createBanner({ root: document.getElementById("banner") });
+
+/**
+ * Silence policy for the current recording.
+ *
+ * Whisper does not return an empty string for a chunk with no speech in it: it
+ * returns the likeliest caption from its training data, which is why a quiet
+ * lecture hall used to produce "Thank you." The gate in recorder.js means such
+ * a chunk is never uploaded, and this tracker turns a RUN of them into advice,
+ * because one silent chunk is a pause and four in a row is usually a mic that
+ * is muted or a browser recording the wrong input.
+ *
+ * warnAfter is 3, so at the default 20s chunk the warning lands about a minute
+ * in. Sooner cries wolf every time a lecturer changes a slide.
+ */
+const silence = createSilenceTracker({ warnAfter: 3 });
+let silentChunks = 0;
+
+const SILENCE_KEY = "silence";
+// Distinct from SILENCE_KEY on purpose. show() no-ops when the key already on
+// screen is re-shown, so reusing the key here would make the button a dead
+// click: the user presses "Check microphone" and nothing at all happens.
+const DEVICE_HELP_KEY = "device-help";
+const DEVICE_KEY = "device-lost";
+
+function setMeter(level) {
+  if (!meterFillEl) return;
+  const position = meterPosition(level);
+  meterFillEl.style.width = `${Math.round(position * 100)}%`;
+  meterTrackEl?.setAttribute("aria-valuenow", String(Math.round(position * 100)));
+}
+
+function setMeterState(state) {
+  if (!meterEl) return;
+  if (state) meterEl.dataset.state = state;
+  else delete meterEl.dataset.state;
+}
 
 let recorder = null;
 let uploader = null;
@@ -324,8 +367,19 @@ async function start() {
     },
   });
 
-  recorder = createRecorder({ onChunk: (chunk) => uploader.enqueue(chunk) });
+  recorder = createRecorder({
+    onChunk: handleChunk,
+    onLevel: setMeter,
+    onDeviceLost: handleDeviceLost,
+  });
   await recorder.start();
+
+  silence.reset();
+  silentChunks = 0;
+  setMeter(0);
+  setMeterState(null);
+  meterEl.hidden = false;
+  banner.clear();
 
   exportControls.refresh();
 
@@ -339,6 +393,111 @@ async function start() {
 
   // The new session is live now, so the drawer should say so.
   refreshLibrary();
+}
+
+/**
+ * The gate itself. A chunk with no speech in it is dropped here rather than
+ * uploaded: no request, no cost, and no opportunity for Whisper to answer
+ * silence with "Thank you." Nothing is lost that was not already nothing, and
+ * the audio is still on disk if keepAudio is on.
+ */
+function handleChunk(chunk) {
+  if (!chunk.silent) {
+    const { changed } = silence.observe(false);
+    if (changed) {
+      // Speech is back. Retract our own message, but never a device-lost
+      // banner that arrived after it.
+      banner.clearIf(SILENCE_KEY);
+      banner.clearIf(DEVICE_HELP_KEY);
+      setMeterState(null);
+    }
+    uploader.enqueue(chunk);
+    return;
+  }
+
+  silentChunks += 1;
+  const { state, consecutive, changed } = silence.observe(true);
+  if (!changed) return;
+
+  if (state === "silent") {
+    setMeterState("silent");
+    banner.show({
+      key: SILENCE_KEY,
+      severity: "warn",
+      message: "No sound reaching Scribe for about a minute.",
+      detail:
+        "Check the input device in your browser's site settings, and that the mic is not muted. " +
+        "Recording is still running, so fixing it now loses nothing but the silence.",
+      action: { label: "Check microphone", onClick: showDevicePicker },
+    });
+    return;
+  }
+
+  banner.show({
+    key: SILENCE_KEY,
+    severity: "info",
+    message: "That chunk had no speech in it, so nothing was sent.",
+    detail: `Normal during a pause. ${consecutive} chunk so far.`,
+  });
+}
+
+/**
+ * The track died under us: unplugged, muted at the OS, or claimed by another
+ * app. Deliberately does NOT stop the recording. A lecture that is still
+ * running can be rescued by plugging the mic back in; one that stopped itself
+ * cannot be, and auto-stopping would turn a recoverable fault into a lost
+ * lecture.
+ */
+function handleDeviceLost({ reason }) {
+  setMeterState("lost");
+  setMeter(0);
+  banner.show({
+    key: DEVICE_KEY,
+    severity: "danger",
+    message:
+      reason === "muted"
+        ? "The microphone went silent at the system level."
+        : "The microphone disconnected.",
+    detail:
+      "Nothing is being transcribed until it is back. The recording is still open and " +
+      "everything captured so far is saved, so reconnect and it picks up where it left off.",
+    action: { label: "Reconnect microphone", onClick: reconnectMicrophone },
+  });
+}
+
+/** Ask for the mic again. Chrome shows its own picker if the site permission
+ *  was reset, and re-requesting is the only way back to a live track. */
+async function reconnectMicrophone() {
+  try {
+    setStatus("Reconnecting the microphone…");
+    await recorder.stop();
+    await recorder.start();
+    banner.clearIf(DEVICE_KEY);
+    silence.reset();
+    setMeterState(null);
+    setStatus("");
+  } catch (error) {
+    banner.show({
+      key: DEVICE_KEY,
+      severity: "danger",
+      message: "Could not reach a microphone.",
+      detail: `${error.message}. Check the input device in your browser's site settings, then try again.`,
+      action: { label: "Try again", onClick: reconnectMicrophone },
+    });
+  }
+}
+
+/** There is no API to open the browser's device picker, so say where it is
+ *  rather than pretending a button can do it. */
+function showDevicePicker() {
+  banner.show({
+    key: DEVICE_HELP_KEY,
+    severity: "warn",
+    message: "Check which microphone this tab is using.",
+    detail:
+      "Click the icon at the left of the address bar, open the microphone setting, and pick the " +
+      "device you are actually speaking into. The meter in the header moves when Scribe hears sound.",
+  });
 }
 
 async function stop() {
@@ -366,6 +525,19 @@ async function stop() {
   exportControls.refresh();
 
   events.close();
+  meterEl.hidden = true;
+  setMeterState(null);
+  banner.clearIf(SILENCE_KEY);
+  banner.clearIf(DEVICE_HELP_KEY);
+  banner.clearIf(DEVICE_KEY);
+  if (silentChunks > 0) {
+    banner.show({
+      key: "silence-summary",
+      severity: "info",
+      message: `${silentChunks} chunk${silentChunks === 1 ? "" : "s"} had no speech and were not sent.`,
+      detail: "Skipping them keeps Whisper's silence hallucinations out of the transcript.",
+    });
+  }
   setStatus(`Saved to sessions/${sessionId}`);
   recordButton.textContent = "Start recording";
   recordButton.dataset.state = "idle";

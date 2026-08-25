@@ -653,3 +653,149 @@ body[data-sidebar="open"] .drawer{ display:flex; }
   background:var(--surface-2);
   font-weight:600;
 }
+
+/* ── Alarms: banner region and input meter ───────────────────────────────────
+   The status line in the bar is a note, not an alarm. It ellipsises, it sits in
+   a crowded row, and it is where "3 chunks waiting" lives. Anything the user
+   has to ACT on gets this region instead: full width, its own row, and enough
+   space for a sentence saying what to do.
+
+   Severity is carried by the semantic tokens declared at the top of this sheet
+   and nothing else. No side stripe, no second accent, no gradient. The tint is
+   the message colour at 8% over the pane surface, so the banner still reads as
+   a surface sitting on the canvas rather than a slab of colour.             */
+
+/* Its own grid row, so a banner pushes the panes down instead of covering
+   them. A hidden region is display:none and the row collapses to nothing. */
+body{ grid-template-rows:auto auto 1fr; }
+.banner-region{ grid-column:1 / -1; grid-row:2; padding:var(--gap) var(--s5) 0; }
+.drawer{ grid-row:3; }
+.panes{ grid-row:3; }
+
+.banner{
+  display:flex;
+  align-items:center;
+  gap:var(--s4);
+  padding:var(--s3) var(--s4);
+  border-radius:var(--r-md);
+  background:var(--surface-1);
+  box-shadow:var(--shadow);
+  color:var(--ink);
+}
+
+.banner__text{ flex:1 1 auto; min-width:0; }   /* min-width:0 or long text pushes the buttons off */
+
+.banner__message{
+  margin:0;
+  font-size:var(--t-body);
+  line-height:var(--lh-body);
+  letter-spacing:var(--tr-body);
+  font-weight:600;
+}
+
+/* 8px clear of the message above it, per the spacing floor: this is a second
+   line of text under a bold one, and descenders must not reach its caps. */
+.banner__detail{
+  margin:var(--s2) 0 0;
+  font-size:var(--t-cap);
+  line-height:var(--lh-tight);
+  letter-spacing:var(--tr-cap);
+  color:var(--ink-2);
+}
+
+/* Tints. `color-mix` keeps one source of truth for each semantic hue rather
+   than hand-mixed hex values that drift from the tokens they came from. */
+.banner--info{   background:color-mix(in srgb, var(--info) 8%, var(--surface-1)); }
+.banner--warn{   background:color-mix(in srgb, var(--warn) 10%, var(--surface-1)); }
+.banner--danger{ background:color-mix(in srgb, var(--danger) 10%, var(--surface-1)); }
+
+.banner--info .banner__message{   color:var(--info); }
+.banner--warn .banner__message{   color:var(--warn); }
+.banner--danger .banner__message{ color:var(--danger); }
+
+/* Flat, grey, one line. Same tier as .ghost; the banner's colour is doing the
+   signalling, so the button must not compete with it. */
+.banner__action{
+  flex:none;
+  padding:var(--s2) var(--s4);        /* horizontal exactly 2x vertical */
+  border:1px solid var(--line);
+  border-radius:var(--r-sm);
+  background:var(--surface-1);
+  color:var(--ink);
+  font:600 var(--t-cap)/var(--lh-flat) var(--font);
+  letter-spacing:var(--tr-cap);
+  white-space:nowrap;                 /* a wrapped button label is a bug */
+  cursor:pointer;
+  transition:background .18s ease;
+}
+.banner__action:hover{ background:var(--surface-2); }
+.banner__action:active{ background:var(--surface-3); }
+.banner__action:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+.banner__dismiss{
+  display:grid;
+  place-items:center;
+  flex:none;
+  width:28px;
+  height:28px;
+  border:0;
+  border-radius:var(--r-sm);
+  background:transparent;
+  color:var(--ink-2);
+  cursor:pointer;
+  transition:background .18s ease, color .18s ease;
+}
+.banner__dismiss:hover{ background:var(--surface-2); color:var(--ink); }
+.banner__dismiss:active{ background:var(--surface-3); }
+.banner__dismiss:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+
+@media (max-width:640px){
+  /* The action needs a full line before the text squeezes to two words. */
+  .banner{ flex-wrap:wrap; }
+  .banner__text{ flex:1 1 100%; }
+  .banner__action{ order:3; }
+}
+
+/* ── Input meter ──────────────────────────────────────────────────────────────
+   The prevention half. A number the user can watch is worth more than a
+   message after the fact: it separates "the room is quiet" from "this browser
+   is recording the wrong device", which is the one distinction the transcript
+   itself can never show. Lightness only, like everything else here.        */
+.meter{
+  display:flex;
+  align-items:center;                 /* one optical centre across the row */
+  gap:var(--s2);
+  flex:none;
+}
+.meter__label{
+  font-size:var(--t-cap);
+  line-height:var(--lh-tight);
+  letter-spacing:var(--tr-cap);
+  color:var(--ink-3);
+}
+.meter__track{
+  display:block;
+  width:64px;
+  height:6px;
+  border-radius:999px;
+  background:var(--surface-3);
+  overflow:hidden;
+}
+.meter__fill{
+  display:block;
+  width:0%;
+  height:100%;
+  border-radius:999px;
+  background:var(--ink-2);
+  transition:width .1s linear;
+}
+/* The meter turns amber only once the silence tracker has escalated, so a
+   normal pause leaves it grey. Colour here means "act", same as the banners. */
+.meter[data-state="silent"] .meter__fill{ background:var(--warn); }
+.meter[data-state="silent"] .meter__label{ color:var(--warn); }
+.meter[data-state="lost"] .meter__fill{ background:var(--danger); }
+.meter[data-state="lost"] .meter__label{ color:var(--danger); }
+
+@media (prefers-reduced-motion:reduce){
+  .meter__fill{ transition:none; }
+}

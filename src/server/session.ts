@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Config } from "./config.js";
 import { Transcript } from "./transcript.js";
 import { EventBroker } from "./events.js";
+import { filterChunkText } from "./hallucination.js";
 import type { RunningSummary } from "./claude.js";
 
 /** Groq whisper-large-v3-turbo list price, USD per hour of audio. */
@@ -22,6 +23,8 @@ export class Session {
   private lastSummaryAt: number;
   private lastSummarisedIndex = 0;
   private failedChunks = 0;
+  /** Chunks whose whole transcript was a Whisper silence artefact, dropped unwritten. */
+  private silenceArtefacts = 0;
   private audioSeconds = 0;
   private queue: Promise<unknown> = Promise.resolve();
   private recording = true;
@@ -87,7 +90,22 @@ export class Session {
       const prompt = this.transcript.tail(200) || undefined;
       let line;
       try {
-        const text = await this.deps.transcribe({ audio: input.audio, prompt });
+        const raw = await this.deps.transcribe({ audio: input.audio, prompt });
+        const text = filterChunkText(raw);
+
+        // A chunk the filter emptied is a silence artefact, not a failure, and
+        // not a line. Recording nothing is the whole point: an artefact written
+        // down would go straight back out as the next chunk's bias prompt and
+        // raise the odds of the same phrase again. See hallucination.ts.
+        if (raw && !text) {
+          console.info(`[scribe] chunk ${index} dropped a silence artefact: ${JSON.stringify(raw)}`);
+          this.silenceArtefacts += 1;
+          await this.transcript.flush();
+          this.publishStatus();
+          await this.maybeSummarise();
+          return;
+        }
+
         // Explicit fields, never `...input`: that would carry the WAV Buffer
         // into the TranscriptLine and out over SSE as JSON on every chunk.
         line = text
@@ -113,6 +131,7 @@ export class Session {
     this.events.publish({
       type: "status",
       failedChunks: this.failedChunks,
+      silenceArtefacts: this.silenceArtefacts,
       audioSeconds: this.audioSeconds,
       estimatedCostUsd: (this.audioSeconds / 3600) * GROQ_USD_PER_AUDIO_HOUR,
     });
@@ -167,6 +186,7 @@ export class Session {
             id: this.id,
             audioSeconds: this.audioSeconds,
             failedChunks: this.failedChunks,
+            silenceArtefacts: this.silenceArtefacts,
             chunks: this.transcript.lastIndex(),
             runningModel: this.config.runningModel,
             finalModel: this.config.finalModel,

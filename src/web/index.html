@@ -27,6 +27,18 @@
         <span id="timer" class="timer">00:00</span>
         <span id="status" class="status" aria-live="polite"></span>
       </div>
+      <div class="meter" id="meter" hidden>
+        <span class="meter__label" id="meter-label">Input</span>
+        <span
+          class="meter__track"
+          role="meter"
+          aria-labelledby="meter-label"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+          id="meter-track"
+        ><span class="meter__fill" id="meter-fill"></span></span>
+      </div>
       <button id="record" class="record" type="button">Start recording</button>
     </header>
 
@@ -49,6 +61,8 @@
       </footer>
     </aside>
     <div id="scrim" class="scrim"></div>
+
+    <div id="banner" class="banner-region" hidden></div>
 
     <main class="panes">
       <section class="pane" aria-labelledby="transcript-heading">

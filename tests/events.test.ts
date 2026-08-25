@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { EventBroker } from "../src/server/events.js";
 
-const status = { type: "status", failedChunks: 0, audioSeconds: 0, estimatedCostUsd: 0 } as const;
+const status = { type: "status", failedChunks: 0, silenceArtefacts: 0, audioSeconds: 0, estimatedCostUsd: 0 } as const;
 
 describe("EventBroker", () => {
   it("delivers published events to subscribers", () => {

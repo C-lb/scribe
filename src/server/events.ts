@@ -4,7 +4,14 @@ import type { RunningSummary } from "./claude.js";
 export type ScribeEvent =
   | { type: "transcript"; line: TranscriptLine }
   | { type: "summary"; summary: RunningSummary }
-  | { type: "status"; failedChunks: number; audioSeconds: number; estimatedCostUsd: number }
+  | {
+      type: "status";
+      failedChunks: number;
+      /** Chunks dropped as Whisper silence artefacts. Not failures: nothing was lost. */
+      silenceArtefacts: number;
+      audioSeconds: number;
+      estimatedCostUsd: number;
+    }
   | { type: "final"; markdown: string };
 
 export class EventBroker {
