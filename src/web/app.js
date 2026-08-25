@@ -11,6 +11,8 @@ const summaryEl = document.getElementById("summary");
 const statusEl = document.getElementById("status");
 const timerEl = document.getElementById("timer");
 const jumpButton = document.getElementById("jump");
+const reconnectButton = document.getElementById("reconnect");
+const micSelect = document.getElementById("mic-select");
 const meterEl = document.getElementById("meter");
 const meterTrackEl = document.getElementById("meter-track");
 const meterFillEl = document.getElementById("meter-fill");
@@ -39,6 +41,70 @@ const SILENCE_KEY = "silence";
 // click: the user presses "Check microphone" and nothing at all happens.
 const DEVICE_HELP_KEY = "device-help";
 const DEVICE_KEY = "device-lost";
+const CONTEXT_KEY = "context-suspended";
+const MIC_STORAGE_KEY = "scribe.inputDeviceId";
+
+/**
+ * Which input device to record from.
+ *
+ * Remembered because the failure this fixes is sticky: Chrome's per-site
+ * microphone preference outlives the device and overrides the system default,
+ * so a user who picked the working mic once should not have to do it again
+ * every session. localStorage can throw in a locked-down profile, and a
+ * recording that will not start is far worse than a forgotten preference.
+ */
+function loadDeviceId() {
+  try {
+    return localStorage.getItem(MIC_STORAGE_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function saveDeviceId(id) {
+  try {
+    if (id) localStorage.setItem(MIC_STORAGE_KEY, id);
+    else localStorage.removeItem(MIC_STORAGE_KEY);
+  } catch {
+    // Preference lost, recording unaffected. Nothing worth telling the user.
+  }
+}
+
+/**
+ * Fill the picker. Labels are only readable once permission has been granted,
+ * so before that this stays a single honest placeholder rather than a list of
+ * blank entries.
+ */
+async function refreshDevices() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  let devices = [];
+  try {
+    devices = await navigator.mediaDevices.enumerateDevices();
+  } catch (error) {
+    console.warn("[scribe] could not list input devices", error);
+    return;
+  }
+
+  const inputs = devices.filter((d) => d.kind === "audioinput" && d.deviceId !== "communications");
+  const saved = loadDeviceId();
+
+  micSelect.replaceChildren();
+  if (inputs.length === 0 || !inputs.some((d) => d.label)) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Default microphone";
+    micSelect.append(option);
+    return;
+  }
+
+  for (const device of inputs) {
+    const option = document.createElement("option");
+    option.value = device.deviceId;
+    option.textContent = device.label || "Microphone";
+    micSelect.append(option);
+  }
+  if (saved && inputs.some((d) => d.deviceId === saved)) micSelect.value = saved;
+}
 
 function setMeter(level) {
   if (!meterFillEl) return;
@@ -372,6 +438,10 @@ async function start() {
     onLevel: setMeter,
     onDeviceLost: handleDeviceLost,
     onDeviceBack: handleDeviceBack,
+    onContextState: handleContextState,
+    // Read fresh on every open, so switching device mid-recording and hitting
+    // Reconnect actually moves to the new one.
+    getDeviceId: () => micSelect.value || loadDeviceId(),
   });
   await recorder.start();
 
@@ -380,6 +450,11 @@ async function start() {
   setMeter(0);
   setMeterState(null);
   meterEl.hidden = false;
+  reconnectButton.hidden = false;
+  reconnectButton.dataset.busy = "no";
+  // Labels become readable only after permission is granted, so the list is
+  // worth rebuilding now even though it was populated at load.
+  refreshDevices().catch(() => {});
   banner.clear();
 
   exportControls.refresh();
@@ -479,21 +554,35 @@ function handleDeviceLost({ reason }) {
  */
 function handleDeviceBack() {
   banner.clearIf(DEVICE_KEY);
+  banner.clearIf(CONTEXT_KEY);
   setMeterState(null);
   setStatus("");
 }
 
-/** Ask for the mic again. Chrome shows its own picker if the site permission
- *  was reset, and re-requesting is the only way back to a live track. */
+/**
+ * Put capture back without ending the recording.
+ *
+ * Never recorder.stop() here: that flushes the buffer as a final chunk and
+ * tears the session down. recover() keeps the buffer, the chunk numbering and
+ * the elapsed time, so a repair leaves no seam in the transcript.
+ */
 async function reconnectMicrophone() {
+  if (reconnectButton.dataset.busy === "yes") return;
+  reconnectButton.dataset.busy = "yes";
+  setStatus("Reopening the microphone…");
   try {
-    setStatus("Reconnecting the microphone…");
-    await recorder.stop();
-    await recorder.start();
+    const { how } = await recorder.recover();
     banner.clearIf(DEVICE_KEY);
+    banner.clearIf(DEVICE_HELP_KEY);
     silence.reset();
     setMeterState(null);
-    setStatus("");
+    // Every interaction gets a response, including the one that found nothing
+    // wrong. A button that silently does nothing reads as broken.
+    const label = recorder.deviceLabel;
+    setStatus(
+      `${how === "resumed" ? "Microphone resumed" : "Microphone reopened"}${label ? `: ${label}` : ""}`,
+    );
+    setTimeout(() => setStatus(""), 4000);
   } catch (error) {
     banner.show({
       key: DEVICE_KEY,
@@ -502,7 +591,31 @@ async function reconnectMicrophone() {
       detail: `${error.message}. Check the input device in your browser's site settings, then try again.`,
       action: { label: "Try again", onClick: reconnectMicrophone },
     });
+    setStatus("");
+  } finally {
+    reconnectButton.dataset.busy = "no";
   }
+}
+
+/**
+ * macOS suspends the audio context when another application opens the input
+ * device: Camera, a call, anything that claims the mic. The recorder tries to
+ * resume it on its own, so this only has to say so if it is still not running.
+ */
+function handleContextState(state) {
+  if (state === "running") {
+    banner.clearIf(CONTEXT_KEY);
+    return;
+  }
+  banner.show({
+    key: CONTEXT_KEY,
+    severity: "warn",
+    message: "Another app took the microphone, so capture paused.",
+    detail:
+      "Opening Camera or joining a call suspends audio for the whole tab. Scribe is trying to " +
+      "resume on its own. If the meter stays flat, use Reconnect mic.",
+    action: { label: "Reconnect mic", onClick: reconnectMicrophone },
+  });
 }
 
 /** There is no API to open the browser's device picker, so say where it is
@@ -544,7 +657,9 @@ async function stop() {
 
   events.close();
   meterEl.hidden = true;
+  reconnectButton.hidden = true;
   setMeterState(null);
+  banner.clearIf(CONTEXT_KEY);
   banner.clearIf(SILENCE_KEY);
   banner.clearIf(DEVICE_HELP_KEY);
   banner.clearIf(DEVICE_KEY);
@@ -564,6 +679,35 @@ async function stop() {
   // The finished session picks up its duration and drops its live marker.
   refreshLibrary();
 }
+
+micSelect.addEventListener("change", () => {
+  saveDeviceId(micSelect.value || null);
+  if (!recording) {
+    setStatus(`Microphone set to ${micSelect.selectedOptions[0]?.textContent ?? "default"}`);
+    setTimeout(() => setStatus(""), 4000);
+    return;
+  }
+  // Mid-recording the choice only means something once capture reopens on it.
+  reconnectMicrophone().catch((error) => {
+    console.error("[scribe] switching device failed", error);
+    setStatus(`Could not switch microphone: ${error.message}`);
+  });
+});
+
+// Devices appearing or vanishing (a headset unplugged, Continuity Camera
+// coming and going) change what the list should contain.
+navigator.mediaDevices?.addEventListener?.("devicechange", () => {
+  refreshDevices().catch(() => {});
+});
+
+refreshDevices().catch(() => {});
+
+reconnectButton.addEventListener("click", () => {
+  reconnectMicrophone().catch((error) => {
+    console.error("[scribe] reconnect failed", error);
+    setStatus(`Reconnect failed: ${error.message}`);
+  });
+});
 
 recordButton.addEventListener("click", () => {
   const wasStarting = recordButton.dataset.state !== "recording";

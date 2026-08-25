@@ -32,6 +32,12 @@ const WATCHDOG_INTERVAL_MS = 500;
  *                   running is recoverable and one that stopped is not.
  * @param onDeviceBack  called when frames resume, so a transient stall retracts
  *                   its own alarm instead of leaving a stale one on screen.
+ * @param onContextState  called with the AudioContext state whenever it
+ *                   changes. macOS suspends it when another app takes the mic.
+ * @param getDeviceId  returns the input device to open, or null for whatever
+ *                   the browser picks. Read at open time, not captured once, so
+ *                   a recovery picks up a device chosen since the recording
+ *                   started.
  */
 export function createRecorder({
   chunkSeconds = 20,
@@ -39,6 +45,9 @@ export function createRecorder({
   onLevel,
   onDeviceLost,
   onDeviceBack,
+  onContextState,
+  getDeviceId,
+  onDeviceFallback,
   frameTimeoutMs = FRAME_TIMEOUT_MS,
 }) {
   let context = null;
@@ -160,56 +169,168 @@ export function createRecorder({
     }
   }
 
+  /**
+   * Build the capture graph: device, context, worklet, wiring.
+   *
+   * Separate from start() so recover() can rebuild it without touching the
+   * chunk buffer, the chunk index, or the elapsed sample count. A recovery that
+   * reset those would renumber chunks mid-lecture and make the timestamps lie.
+   */
+  async function openGraph() {
+    // Chrome keeps a per-SITE microphone preference that overrides the macOS
+    // default, and it survives the device going away. An unqualified request
+    // therefore hands back a device that is live, unmuted, enabled, and
+    // delivering digital zero, with nothing in the track to say so. Naming the
+    // device explicitly is the only way past that, which is why the UI has a
+    // picker and why this is read fresh on every open.
+    const deviceId = getDeviceId ? getDeviceId() : null;
+
+    // Tuned for a lecturer thirty feet away: all three of these are built for
+    // close-mic phone calls and chew up exactly the quiet speech we need.
+    const base = {
+      channelCount: 1,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    };
+
+    // `exact`, and it has to be. Measured on this machine: with `ideal`, Chrome
+    // returned its per-site preferred device ("dabian Microphone", delivering
+    // digital zero) even when the built-in mic was named explicitly. An `ideal`
+    // deviceId is a suggestion the site preference outranks, so the picker
+    // would have looked like it worked and changed nothing.
+    if (deviceId) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { ...base, deviceId: { exact: deviceId } },
+        });
+      } catch (error) {
+        // The remembered device is gone: unplugged, or a Continuity mic that
+        // wandered off. Recording something beats recording nothing, so fall
+        // through to whatever the browser will give us.
+        console.warn(`[scribe] could not open the chosen microphone, falling back`, error);
+        safely(onDeviceFallback, { error });
+        stream = await navigator.mediaDevices.getUserMedia({ audio: base });
+      }
+    } else {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: base });
+    }
+
+    context = new AudioContext();
+    await context.audioWorklet.addModule("/audio/worklet.js");
+
+    // macOS interrupts the audio session when another application opens the
+    // input device: opening Camera, joining a call, anything that claims the
+    // mic. The AudioContext is suspended and STAYS suspended, which stops the
+    // worklet being pulled, which stops frames, which stops the recording,
+    // while the microphone itself remains perfectly connected. Nothing resumes
+    // it on its own, so this does.
+    context.addEventListener("statechange", () => {
+      if (stopping || !context) return;
+      safely(onContextState, context.state);
+      if (context.state === "running") return;
+      console.warn(`[scribe] audio context went ${context.state}, resuming`);
+      context.resume().catch((error) => {
+        // Browsers can refuse a resume that is not tied to a user gesture,
+        // which is exactly why the UI carries its own reconnect control.
+        console.error("[scribe] could not resume the audio context", error);
+        reportDeviceLost("suspended");
+      });
+    });
+
+    for (const track of stream.getAudioTracks()) watchTrack(track);
+
+    const source = context.createMediaStreamSource(stream);
+    node = new AudioWorkletNode(context, "tap");
+    downsampler = createDownsampler(context.sampleRate, TARGET_RATE);
+    // A render quantum (128 frames) is not a multiple of the
+    // input/output ratio in general, so downsampling must carry its
+    // remainder across calls -- see createDownsampler. This handler also
+    // sits next to the capture path: a malformed worklet message must
+    // never be able to throw and take the recording down mid-lecture.
+    node.port.onmessage = (event) => {
+      try {
+        // Proof of life, stamped before anything that could throw.
+        if (liveness.frame(Date.now()).changed) reportDeviceBack();
+
+        // Metered before the downsampler so a broken resample cannot make the
+        // meter read silent, which would send the user hunting the wrong fault.
+        reportLevel(event.data);
+        append(downsampler.push(event.data));
+        drainChunks();
+      } catch (error) {
+        console.error("[scribe] failed to handle worklet message", error);
+      }
+    };
+
+    source.connect(node);
+    // Keep the graph pulling without routing the mic to the speakers.
+    const sink = context.createGain();
+    sink.gain.value = 0;
+    node.connect(sink).connect(context.destination);
+  }
+
+  /** Tear the graph down without flushing. Recovery keeps the buffer. */
+  async function closeGraph() {
+    if (node) node.port.onmessage = null;
+    if (stream) for (const track of stream.getTracks()) track.stop();
+    if (context) await context.close().catch(() => {});
+    context = null;
+    stream = null;
+    node = null;
+    downsampler = null;
+  }
+
   return {
     async start() {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          // Both are tuned for close-mic phone calls. On a lecturer thirty feet
-          // away they chew up exactly the quiet speech we need.
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
-      });
-
-      context = new AudioContext();
-      await context.audioWorklet.addModule("/audio/worklet.js");
-
       stopping = false;
       deviceLost = false;
       liveness.reset();
-      for (const track of stream.getAudioTracks()) watchTrack(track);
+      await openGraph();
       watchdog = setInterval(checkFrames, WATCHDOG_INTERVAL_MS);
+    },
 
-      const source = context.createMediaStreamSource(stream);
-      node = new AudioWorkletNode(context, "tap");
-      downsampler = createDownsampler(context.sampleRate, TARGET_RATE);
-      // A render quantum (128 frames) is not a multiple of the
-      // input/output ratio in general, so downsampling must carry its
-      // remainder across calls -- see createDownsampler. This handler also
-      // sits next to the capture path: a malformed worklet message must
-      // never be able to throw and take the recording down mid-lecture.
-      node.port.onmessage = (event) => {
+    /**
+     * Put capture back, cheapest repair first.
+     *
+     * Resuming a suspended context is the common case and keeps the same
+     * device, so it is tried first. Only if that does not restore frames is the
+     * whole graph rebuilt, which re-runs getUserMedia and picks up whatever the
+     * current default input now is. Both paths preserve the buffer and the
+     * chunk numbering, so a recovery is invisible in the transcript.
+     */
+    async recover() {
+      if (stopping) return { ok: false, how: "stopped" };
+
+      if (context && context.state !== "running") {
         try {
-          // Proof of life, stamped before anything that could throw.
-          if (liveness.frame(Date.now()).changed) reportDeviceBack();
-
-          // Metered before the downsampler so a broken resample cannot make the
-          // meter read silent, which would send the user hunting the wrong fault.
-          reportLevel(event.data);
-          append(downsampler.push(event.data));
-          drainChunks();
+          await context.resume();
+          if (context.state === "running") {
+            liveness.reset();
+            return { ok: true, how: "resumed" };
+          }
         } catch (error) {
-          console.error("[scribe] failed to handle worklet message", error);
+          console.warn("[scribe] resume failed, rebuilding the graph", error);
         }
-      };
+      }
 
-      source.connect(node);
-      // Keep the graph pulling without routing the mic to the speakers.
-      const sink = context.createGain();
-      sink.gain.value = 0;
-      node.connect(sink).connect(context.destination);
+      await closeGraph();
+      await openGraph();
+      liveness.reset();
+      deviceLost = false;
+      return { ok: true, how: "reopened" };
+    },
+
+    /** The device actually opened. `ideal` can silently give you another one,
+     *  so the UI reports what was granted rather than what was requested. */
+    get deviceLabel() {
+      const track = stream && stream.getAudioTracks()[0];
+      return track ? track.label : null;
+    },
+
+    /** What the context is doing, for the UI to report honestly. */
+    get contextState() {
+      return context ? context.state : "closed";
     },
 
     async stop() {
@@ -218,9 +339,7 @@ export function createRecorder({
       stopping = true;
       if (watchdog) clearInterval(watchdog);
       watchdog = null;
-      if (node) node.port.onmessage = null;
-      if (stream) for (const track of stream.getTracks()) track.stop();
-      if (context) await context.close();
+      await closeGraph();
 
       // Flush whatever is left, however short.
       if (buffer.length > 0) {
@@ -239,10 +358,6 @@ export function createRecorder({
         buffer = new Float32Array(0);
       }
 
-      context = null;
-      stream = null;
-      node = null;
-      downsampler = null;
       deviceLost = false;
       liveness.reset();
       safely(onLevel, 0);

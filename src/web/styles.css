@@ -799,3 +799,54 @@ body{ grid-template-rows:auto auto 1fr; }
 @media (prefers-reduced-motion:reduce){
   .meter__fill{ transition:none; }
 }
+
+/* ── Reconnect control ────────────────────────────────────────────────────────
+   Visible for the whole recording, not only once something has gone wrong.
+
+   The red banner can only appear after the watchdog has waited out its timeout,
+   and it can be dismissed. Neither helps the person who has just switched back
+   from another app and can see for themselves that the meter is dead. A repair
+   the user can reach before the software has finished diagnosing is worth more
+   than a better diagnosis, so this sits in the bar the entire time.
+
+   Flat and grey, per the ghost tier. It must not compete with the one accent
+   fill on the record button beside it.                                      */
+.reconnect{
+  display:inline-flex;
+  align-items:center;                 /* icon and label share one optical centre */
+  gap:.55em;                          /* the 0.5-0.6em icon-to-label gap */
+  flex:none;
+  white-space:nowrap;                 /* the label never wraps */
+}
+.reconnect svg{ flex:none; }
+.reconnect[data-busy="yes"]{ opacity:.7; pointer-events:none; }
+/* Spinning only while it works, and never for a reader who asked for stillness. */
+.reconnect[data-busy="yes"] svg{ animation:reconnect-spin 1s linear infinite; }
+@keyframes reconnect-spin{ to{ transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce){
+  .reconnect[data-busy="yes"] svg{ animation:none; }
+}
+
+/* ── Input picker ─────────────────────────────────────────────────────────────
+   Chrome keeps a per-site microphone preference that outlives the device and
+   overrides the system default, so an unqualified getUserMedia can hand back a
+   device that is live, unmuted and delivering digital zero. Nothing on the
+   track says so, and no amount of better error copy fixes it, because the user
+   needs a way to CHANGE the device, not a better description of the problem.
+   That is what this is: the corrective action for the amber banner.        */
+.mic-select{
+  max-width:170px;
+  padding:var(--s1) var(--s2);
+  border:1px solid var(--line);
+  border-radius:var(--r-sm);
+  background:var(--surface-1);
+  color:var(--ink-2);
+  font:500 var(--t-cap)/var(--lh-tight) var(--font);
+  letter-spacing:var(--tr-cap);
+  text-overflow:ellipsis;            /* device names are long and must not push the bar */
+  cursor:pointer;
+}
+.mic-select:hover{ background:var(--surface-2); color:var(--ink); }
+.mic-select:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+/* Amber only once the device has been shown to be dead, never by default. */
+.meter[data-state="silent"] .mic-select{ border-color:var(--warn); color:var(--warn); }

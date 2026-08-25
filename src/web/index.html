@@ -28,7 +28,8 @@
         <span id="status" class="status" aria-live="polite"></span>
       </div>
       <div class="meter" id="meter" hidden>
-        <span class="meter__label" id="meter-label">Input</span>
+        <label class="meter__label" id="meter-label" for="mic-select">Input</label>
+        <select id="mic-select" class="mic-select" title="Which microphone Scribe records from"></select>
         <span
           class="meter__track"
           role="meter"
@@ -39,6 +40,19 @@
           id="meter-track"
         ><span class="meter__fill" id="meter-fill"></span></span>
       </div>
+      <button
+        id="reconnect"
+        class="ghost reconnect"
+        type="button"
+        title="Reopen the microphone without ending the recording"
+        hidden
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span>Reconnect mic</span>
+      </button>
       <button id="record" class="record" type="button">Start recording</button>
     </header>
 
