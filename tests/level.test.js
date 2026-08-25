@@ -5,6 +5,7 @@ import {
   toDbfs,
   meterPosition,
   createSilenceTracker,
+  createLivenessMonitor,
   SILENCE_RMS,
 } from "../src/web/audio/level.js";
 
@@ -137,5 +138,70 @@ describe("createSilenceTracker", () => {
     tracker.reset();
     expect(tracker.consecutive).toBe(0);
     expect(tracker.observe(true).state).toBe("quiet");
+  });
+});
+
+describe("createLivenessMonitor", () => {
+  it("is live before the first frame, rather than alarming on a fresh recorder", () => {
+    const monitor = createLivenessMonitor({ timeoutMs: 3000 });
+    expect(monitor.check(999_999)).toEqual({ state: "live", changed: false });
+    expect(monitor.stalled).toBe(false);
+  });
+
+  it("stays live while frames keep arriving", () => {
+    const monitor = createLivenessMonitor({ timeoutMs: 3000 });
+    monitor.frame(0);
+    expect(monitor.check(1000).state).toBe("live");
+    monitor.frame(1000);
+    expect(monitor.check(2000).state).toBe("live");
+  });
+
+  it("goes stalled once, only after the timeout is exceeded", () => {
+    const monitor = createLivenessMonitor({ timeoutMs: 3000 });
+    monitor.frame(0);
+    // On the boundary is not over it: scheduler jitter must not trip the alarm.
+    expect(monitor.check(3000)).toEqual({ state: "live", changed: false });
+    expect(monitor.check(3001)).toEqual({ state: "stalled", changed: true });
+    // And it does not re-announce itself on every tick of the watchdog.
+    expect(monitor.check(4000)).toEqual({ state: "stalled", changed: false });
+  });
+
+  it("retracts itself when a frame arrives, with no user action", () => {
+    // The bug this whole monitor exists for: a transient stall used to leave a
+    // red "microphone disconnected" banner up permanently on a working mic.
+    const monitor = createLivenessMonitor({ timeoutMs: 3000 });
+    monitor.frame(0);
+    expect(monitor.check(5000).state).toBe("stalled");
+    expect(monitor.frame(5100)).toEqual({ state: "live", changed: true });
+    expect(monitor.stalled).toBe(false);
+    // Retracted once, not once per frame.
+    expect(monitor.frame(5200)).toEqual({ state: "live", changed: false });
+  });
+
+  it("recovers through the watchdog too, not only through a frame", () => {
+    const monitor = createLivenessMonitor({ timeoutMs: 3000 });
+    monitor.frame(0);
+    expect(monitor.check(9000).state).toBe("stalled");
+    monitor.frame(9000);
+    expect(monitor.check(9500)).toEqual({ state: "live", changed: false });
+  });
+
+  it("survives a stall, a recovery and a second stall", () => {
+    const monitor = createLivenessMonitor({ timeoutMs: 1000 });
+    monitor.frame(0);
+    expect(monitor.check(2000).changed).toBe(true);
+    monitor.frame(2100);
+    expect(monitor.check(2200).state).toBe("live");
+    expect(monitor.check(4000)).toEqual({ state: "stalled", changed: true });
+  });
+
+  it("resets to the pre-first-frame state", () => {
+    const monitor = createLivenessMonitor({ timeoutMs: 1000 });
+    monitor.frame(0);
+    monitor.check(5000);
+    expect(monitor.stalled).toBe(true);
+    monitor.reset();
+    expect(monitor.stalled).toBe(false);
+    expect(monitor.check(999_999)).toEqual({ state: "live", changed: false });
   });
 });

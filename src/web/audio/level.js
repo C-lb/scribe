@@ -95,3 +95,57 @@ export function createSilenceTracker({ warnAfter = 3 } = {}) {
     },
   };
 }
+
+/**
+ * Liveness: is capture still delivering audio frames?
+ *
+ * Split out of the recorder and made pure because the first version of this
+ * guard was wrong in a way nothing could catch. It alarmed on the track's own
+ * `mute` event, which Chrome fires on healthy microphones during a sample-rate
+ * switch or a Bluetooth profile change, and it never retracted, so one
+ * transient stall left a red "microphone disconnected" banner up permanently
+ * while the mic was plugged in and working. A guard that cannot be driven
+ * through both transitions in a test is a guard nobody has seen work.
+ *
+ * Frames arriving is the only evidence that means what the red banner claims.
+ * Note what this deliberately does NOT catch: a connected but muted microphone
+ * still delivers frames, they are just full of zeroes. That is silence, handled
+ * by createSilenceTracker at the amber tier, and conflating the two is what
+ * makes an alarm untrustworthy.
+ */
+export function createLivenessMonitor({ timeoutMs = 3000 } = {}) {
+  let lastFrameAt = null;
+  let stalled = false;
+
+  return {
+    /** Proof of life. Resumes automatically: recovery needs no user action. */
+    frame(now) {
+      lastFrameAt = now;
+      if (!stalled) return { state: "live", changed: false };
+      stalled = false;
+      return { state: "live", changed: true };
+    },
+
+    /**
+     * The watchdog tick. Before the first frame there is nothing to judge, so
+     * it reports live rather than alarming on a recorder that has only just
+     * been started.
+     */
+    check(now) {
+      if (lastFrameAt === null) return { state: "live", changed: false };
+      const overdue = now - lastFrameAt > timeoutMs;
+      const changed = overdue !== stalled;
+      stalled = overdue;
+      return { state: stalled ? "stalled" : "live", changed };
+    },
+
+    reset() {
+      lastFrameAt = null;
+      stalled = false;
+    },
+
+    get stalled() {
+      return stalled;
+    },
+  };
+}

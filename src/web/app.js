@@ -371,6 +371,7 @@ async function start() {
     onChunk: handleChunk,
     onLevel: setMeter,
     onDeviceLost: handleDeviceLost,
+    onDeviceBack: handleDeviceBack,
   });
   await recorder.start();
 
@@ -454,15 +455,32 @@ function handleDeviceLost({ reason }) {
   banner.show({
     key: DEVICE_KEY,
     severity: "danger",
+    // Only claim what was actually observed. "Disconnected" is a diagnosis and
+    // it is often wrong; "stopped sending audio" is what was measured, and it
+    // covers the unplugged cable, the OS taking the device, and the app that
+    // grabbed it exclusively, without asserting which one it was.
     message:
-      reason === "muted"
-        ? "The microphone went silent at the system level."
-        : "The microphone disconnected.",
+      reason === "ended"
+        ? "The microphone was disconnected."
+        : "No audio has reached Scribe for a few seconds.",
     detail:
-      "Nothing is being transcribed until it is back. The recording is still open and " +
-      "everything captured so far is saved, so reconnect and it picks up where it left off.",
+      "Nothing is being transcribed until it comes back. The recording is still open and " +
+      "everything captured so far is saved, so it picks up on its own the moment audio returns.",
     action: { label: "Reconnect microphone", onClick: reconnectMicrophone },
   });
+}
+
+/**
+ * Frames are arriving again, so the red banner has stopped being true.
+ *
+ * It retracts itself. Leaving a stale alarm on screen is how an alarm stops
+ * being believed, and the user has no way to tell a banner that is still
+ * accurate from one that simply never got cleared.
+ */
+function handleDeviceBack() {
+  banner.clearIf(DEVICE_KEY);
+  setMeterState(null);
+  setStatus("");
 }
 
 /** Ask for the mic again. Chrome shows its own picker if the site permission

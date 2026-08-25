@@ -1,7 +1,7 @@
 import { createDownsampler } from "./resample.js";
 import { encodeWav } from "./wav.js";
 import { findCutPoint } from "./chunker.js";
-import { rms, isSilent } from "./level.js";
+import { rms, isSilent, createLivenessMonitor } from "./level.js";
 
 const TARGET_RATE = 16000;
 
@@ -10,15 +10,37 @@ const TARGET_RATE = 16000;
 const LEVEL_INTERVAL_MS = 100;
 
 /**
+ * How long without a single audio frame before the capture counts as dead.
+ *
+ * Frames arrive every few milliseconds while a track is alive, so this is
+ * enormous in comparison and will not trip on scheduler jitter or a tab that
+ * was briefly backgrounded. It is the one signal that actually means what the
+ * red banner claims, which is why the banner is driven by this and not by the
+ * track's own events.
+ */
+const FRAME_TIMEOUT_MS = 3000;
+
+/** How often the watchdog checks. */
+const WATCHDOG_INTERVAL_MS = 500;
+
+/**
  * @param onChunk    called per chunk; the chunk carries `level` and `silent`
  *                   so the caller can decide not to upload it.
  * @param onLevel    called ~10x/second with the current input RMS, for a meter.
- * @param onDeviceLost   called when the capture track dies under us: unplugged,
- *                   muted at the OS, or taken by another application. The
+ * @param onDeviceLost   called when audio frames genuinely stop arriving. The
  *                   recorder does NOT stop itself, because a lecture that keeps
  *                   running is recoverable and one that stopped is not.
+ * @param onDeviceBack  called when frames resume, so a transient stall retracts
+ *                   its own alarm instead of leaving a stale one on screen.
  */
-export function createRecorder({ chunkSeconds = 20, onChunk, onLevel, onDeviceLost }) {
+export function createRecorder({
+  chunkSeconds = 20,
+  onChunk,
+  onLevel,
+  onDeviceLost,
+  onDeviceBack,
+  frameTimeoutMs = FRAME_TIMEOUT_MS,
+}) {
   let context = null;
   let stream = null;
   let node = null;
@@ -28,6 +50,9 @@ export function createRecorder({ chunkSeconds = 20, onChunk, onLevel, onDeviceLo
   let downsampler = null;
   let lastLevelAt = 0;
   let deviceLost = false;
+  let watchdog = null;
+  let stopping = false;
+  const liveness = createLivenessMonitor({ timeoutMs: frameTimeoutMs });
 
   /** Guards every callback out of this module. A handler that throws must not
    *  be able to take down the capture loop, same rule as the worklet handler. */
@@ -49,21 +74,55 @@ export function createRecorder({ chunkSeconds = 20, onChunk, onLevel, onDeviceLo
   }
 
   function reportDeviceLost(reason) {
-    // Once, not once per event: a single unplug fires `mute` and `ended` on the
-    // track and a `devicechange` on the device list, and three red banners for
-    // one cable is noise.
-    if (deviceLost) return;
+    // Once per outage, not once per event. One unplug fires `mute` and `ended`
+    // on the track and a `devicechange` on the device list; three red banners
+    // for one cable is noise.
+    if (deviceLost || stopping) return;
     deviceLost = true;
     safely(onDeviceLost, { reason });
   }
 
+  /** Frames are flowing again. Retracts the alarm rather than waiting for the
+   *  user to dismiss a banner that has stopped being true. */
+  function reportDeviceBack() {
+    if (!deviceLost) return;
+    deviceLost = false;
+    safely(onDeviceBack);
+  }
+
+  /**
+   * The only authority on whether capture is alive.
+   *
+   * The track's own events are hints, not proof. Chrome fires `mute` on a
+   * perfectly healthy microphone whenever the source stalls for a moment: a
+   * sample-rate switch, a Bluetooth profile change, another application opening
+   * the device. Alarming on that reported a disconnected mic to people whose
+   * mic was plugged in and working, which is worse than saying nothing, because
+   * an alarm that lies gets ignored when it is finally right.
+   *
+   * Frames arriving is the thing the red banner actually claims, so measure
+   * that. Note this stays properly distinct from the silence tier: a muted but
+   * connected mic still delivers frames, they are just full of zeroes, and that
+   * is the amber case, not this one.
+   */
+  function checkFrames() {
+    if (stopping) return;
+    const { state, changed } = liveness.check(Date.now());
+    if (!changed) return;
+    if (state === "stalled") reportDeviceLost("stalled");
+    else reportDeviceBack();
+  }
+
   function watchTrack(track) {
     if (!track) return;
+    // `ended` is terminal by definition and never fires for a stop() we called
+    // ourselves, so it is trusted immediately.
     track.addEventListener("ended", () => reportDeviceLost("ended"));
-    track.addEventListener("mute", () => reportDeviceLost("muted"));
-    track.addEventListener("unmute", () => {
-      deviceLost = false;
-    });
+    // `mute` only prompts an early look at the frame clock. If frames really
+    // have stopped the watchdog would have caught it within the timeout anyway;
+    // if they have not, nothing is shown at all.
+    track.addEventListener("mute", () => checkFrames());
+    track.addEventListener("unmute", () => checkFrames());
   }
 
   const minSeconds = Math.max(1, chunkSeconds - 5);
@@ -117,7 +176,11 @@ export function createRecorder({ chunkSeconds = 20, onChunk, onLevel, onDeviceLo
       context = new AudioContext();
       await context.audioWorklet.addModule("/audio/worklet.js");
 
+      stopping = false;
+      deviceLost = false;
+      liveness.reset();
       for (const track of stream.getAudioTracks()) watchTrack(track);
+      watchdog = setInterval(checkFrames, WATCHDOG_INTERVAL_MS);
 
       const source = context.createMediaStreamSource(stream);
       node = new AudioWorkletNode(context, "tap");
@@ -129,6 +192,9 @@ export function createRecorder({ chunkSeconds = 20, onChunk, onLevel, onDeviceLo
       // never be able to throw and take the recording down mid-lecture.
       node.port.onmessage = (event) => {
         try {
+          // Proof of life, stamped before anything that could throw.
+          if (liveness.frame(Date.now()).changed) reportDeviceBack();
+
           // Metered before the downsampler so a broken resample cannot make the
           // meter read silent, which would send the user hunting the wrong fault.
           reportLevel(event.data);
@@ -147,6 +213,11 @@ export function createRecorder({ chunkSeconds = 20, onChunk, onLevel, onDeviceLo
     },
 
     async stop() {
+      // Set before anything is torn down: tearing a graph down stops frames by
+      // definition, and the watchdog must not report our own stop as a fault.
+      stopping = true;
+      if (watchdog) clearInterval(watchdog);
+      watchdog = null;
       if (node) node.port.onmessage = null;
       if (stream) for (const track of stream.getTracks()) track.stop();
       if (context) await context.close();
@@ -173,6 +244,7 @@ export function createRecorder({ chunkSeconds = 20, onChunk, onLevel, onDeviceLo
       node = null;
       downsampler = null;
       deviceLost = false;
+      liveness.reset();
       safely(onLevel, 0);
     },
   };
