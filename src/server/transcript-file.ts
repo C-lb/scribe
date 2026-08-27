@@ -37,15 +37,54 @@ export async function writeTranscriptFile(dir: string, file: TranscriptFileV1): 
  * must degrade to the Markdown fallback, never make the session unreadable.
  */
 export async function readTranscriptFile(dir: string): Promise<TranscriptFileV1 | null> {
+  let raw: string;
   try {
-    const raw = await readFile(transcriptJsonPath(dir), "utf8");
-    return JSON.parse(raw) as TranscriptFileV1;
+    raw = await readFile(transcriptJsonPath(dir), "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       console.error("[scribe] failed to read transcript.json:", error);
     }
     return null;
   }
+
+  try {
+    return JSON.parse(raw) as TranscriptFileV1;
+  } catch (error) {
+    await quarantineCorruptFile(dir, error);
+    return null;
+  }
+}
+
+/**
+ * The Markdown fallback is a real loss, not a graceful one: it drops every
+ * flag and renumbers the lines by position, so a session with a dropped
+ * silence artefact in it has click-to-play pointing at the wrong
+ * audio/NNNN.wav from then on, with nothing on screen to say so. Worse, the
+ * next flush overwrites the corrupt file and the real indexes are gone for
+ * good.
+ *
+ * So the corrupt file is moved aside under a timestamped name before anything
+ * can overwrite it, and the loss is logged loudly rather than swallowed. The
+ * bytes stay on disk next to the session for as long as it takes someone to
+ * pull the indexes back out by hand.
+ */
+async function quarantineCorruptFile(dir: string, error: unknown): Promise<void> {
+  const source = transcriptJsonPath(dir);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const kept = path.join(dir, `transcript.corrupt-${stamp}.json`);
+  try {
+    await rename(source, kept);
+  } catch (renameError) {
+    console.error(`[scribe] could not preserve the corrupt transcript.json in ${dir}:`, renameError);
+    return;
+  }
+  console.error(
+    `[scribe] transcript.json in ${dir} did not parse and has been kept as ${path.basename(kept)}. ` +
+      "The transcript now falls back to transcript.md, which has no flags and renumbers lines by " +
+      "position, so click-to-play may point at the wrong chunk. The real chunk indexes are " +
+      "recoverable by hand from the kept file.",
+    error,
+  );
 }
 
 const INAUDIBLE = /^\[inaudible ~\d\d:\d\d\]$/;
