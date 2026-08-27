@@ -8,6 +8,7 @@ import { filterChunkText } from "./hallucination.js";
 import { promptPrefix, correct } from "./glossary.js";
 import { joinWavs } from "./wav-join.js";
 import type { RunningSummary } from "./claude.js";
+import { appendFlagsSection } from "./claude.js";
 
 /** Groq whisper-large-v3-turbo list price, USD per hour of audio. */
 const GROQ_USD_PER_AUDIO_HOUR = 0.04;
@@ -155,6 +156,21 @@ export class Session {
     }).catch((error) => console.error("[scribe] failed to write transcript.json:", error));
   }
 
+  /** A flag is a timestamp, nothing more. Resolving it to a chunk is best
+   *  effort: a flag dropped during the chunk still being recorded has no line
+   *  yet, and chunkIndex stays null until the transcript catches up -- it is
+   *  never backfilled once the chunk finally arrives, because a listener
+   *  pressing the key cares about the moment, not about which chunk file it
+   *  ends up landing in. */
+  flag(atMs: number): TranscriptFlag {
+    const line = this.transcript.lines().find((l) => atMs >= l.startMs && atMs < l.endMs);
+    const flag: TranscriptFlag = { atMs, chunkIndex: line?.index ?? null };
+    this.flags.push(flag);
+    this.events.publish({ type: "flag", flag });
+    void this.persist();
+    return flag;
+  }
+
   private publishStatus(): void {
     this.events.publish({
       type: "status",
@@ -199,7 +215,11 @@ export class Session {
 
       let markdown = "";
       try {
-        markdown = await this.deps.final(this.transcript.fullText());
+        const raw = await this.deps.final(this.transcript.fullText());
+        // Appended after the model returns, never asked for in the prompt:
+        // the flags are ground truth from the person in the room, and a
+        // model handed them as prose might paraphrase or drop one.
+        markdown = appendFlagsSection(raw, this.flags, this.transcript.lines());
         await writeFile(path.join(this.dir, "summary.md"), `${markdown}\n`, "utf8");
         this.events.publish({ type: "final", markdown });
       } catch (error) {

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildRunningMessages,
   RUNNING_SYSTEM_PROMPT,
+  appendFlagsSection,
 } from "../src/server/claude.js";
 
 const previous = {
@@ -60,5 +61,31 @@ describe("RUNNING_SYSTEM_PROMPT", () => {
     // A single varying byte in the prefix invalidates the whole cache.
     expect(RUNNING_SYSTEM_PROMPT).not.toMatch(/\d{4}-\d{2}-\d{2}/);
     expect(RUNNING_SYSTEM_PROMPT).not.toMatch(/\d{2}:\d{2}:\d{2}/);
+  });
+});
+
+describe("appendFlagsSection", () => {
+  const lines = [
+    { index: 0, startMs: 0, endMs: 20_000, text: "the first thing said", failed: false },
+    { index: 1, startMs: 20_000, endMs: 40_000, text: "the second thing said", failed: false },
+  ];
+
+  it("appends a Marked in the room section with the timestamp and matching line", () => {
+    const out = appendFlagsSection("# Notes", [{ atMs: 5_000, chunkIndex: 0 }], lines);
+    expect(out).toContain("## Marked in the room");
+    expect(out).toContain("**00:05**");
+    expect(out).toContain("the first thing said");
+  });
+
+  it("leaves the markdown untouched when there are no flags, not even an empty heading", () => {
+    const out = appendFlagsSection("# Notes", [], lines);
+    expect(out).toBe("# Notes");
+    expect(out).not.toContain("Marked in the room");
+  });
+
+  it("says so rather than inventing text when the flag never resolved to a chunk", () => {
+    const out = appendFlagsSection("# Notes", [{ atMs: 5_000, chunkIndex: null }], lines);
+    expect(out).toContain("**00:05**");
+    expect(out).not.toContain("the first thing said");
   });
 });

@@ -1,5 +1,6 @@
 import type { TranscriptLine } from "./transcript.js";
 import type { RunningSummary } from "./claude.js";
+import type { TranscriptFlag } from "./transcript-file.js";
 
 export type ScribeEvent =
   | { type: "transcript"; line: TranscriptLine }
@@ -12,7 +13,8 @@ export type ScribeEvent =
       audioSeconds: number;
       estimatedCostUsd: number;
     }
-  | { type: "final"; markdown: string };
+  | { type: "final"; markdown: string }
+  | { type: "flag"; flag: TranscriptFlag };
 
 export class EventBroker {
   private listeners = new Set<(event: ScribeEvent) => void>();

@@ -2,6 +2,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod/v4";
 import type { Config } from "./config.js";
+import type { TranscriptFlag } from "./transcript-file.js";
+import { formatTimestamp, type TranscriptLine } from "./transcript.js";
 
 export const RunningSummarySchema = z.object({
   topics: z.array(z.string()),
@@ -78,6 +80,31 @@ export function buildRunningMessages(
       ],
     },
   ];
+}
+
+/**
+ * Appended to the final Markdown after the model returns, never asked for in
+ * the prompt: the flags are ground truth from the person in the room, and a
+ * model handed them as prose might paraphrase or drop one. A session with no
+ * flags gets no section at all -- an empty "Marked in the room" heading would
+ * be worse than not mentioning it.
+ */
+export function appendFlagsSection(
+  markdown: string,
+  flags: TranscriptFlag[],
+  lines: TranscriptLine[],
+): string {
+  if (flags.length === 0) return markdown;
+
+  const items = flags.map((flag) => {
+    const line = flag.chunkIndex !== null
+      ? lines.find((l) => l.index === flag.chunkIndex)
+      : undefined;
+    const text = line?.text ?? "(no transcript line at this moment)";
+    return `- **${formatTimestamp(flag.atMs)}** ${text}`;
+  });
+
+  return `${markdown}\n\n## Marked in the room\n\n${items.join("\n")}`;
 }
 
 export function createSummariser(config: Config) {

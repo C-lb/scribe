@@ -195,6 +195,47 @@ describe("Session", () => {
     expect(session.isRecording).toBe(false);
   });
 
+  it("resolves a flag to the chunk recording at that timestamp and persists it", async () => {
+    const session = await Session.create(await testConfig(), okDeps());
+    await session.ingestChunk(chunk(1));
+    const flag = session.flag(12_000);
+    expect(flag).toEqual({ atMs: 12_000, chunkIndex: 1 });
+
+    // flag() persists fire-and-forget (`void this.persist()`), so give the
+    // write a tick to land before reading it back.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const saved = JSON.parse(
+      await readFile(path.join(session.dir, "transcript.json"), "utf8"),
+    );
+    expect(saved.flags).toEqual([{ atMs: 12_000, chunkIndex: 1 }]);
+  });
+
+  it("leaves chunkIndex null for a flag with no line covering that timestamp yet", async () => {
+    const session = await Session.create(await testConfig(), okDeps());
+    const flag = session.flag(5_000);
+    expect(flag.chunkIndex).toBeNull();
+  });
+
+  it("appends a Marked in the room section to summary.md when the session has flags", async () => {
+    const session = await Session.create(await testConfig(), okDeps());
+    await session.ingestChunk(chunk(1));
+    session.flag(12_000);
+    await session.stop();
+
+    const markdown = await readFile(path.join(session.dir, "summary.md"), "utf8");
+    expect(markdown).toContain("## Marked in the room");
+    expect(markdown).toContain("**00:12**");
+  });
+
+  it("gets no Marked in the room heading at all when the session has no flags", async () => {
+    const session = await Session.create(await testConfig(), okDeps());
+    await session.ingestChunk(chunk(1));
+    await session.stop();
+
+    const markdown = await readFile(path.join(session.dir, "summary.md"), "utf8");
+    expect(markdown).not.toContain("Marked in the room");
+  });
+
   it("puts the glossary in front of the bias prompt and corrects drift", async () => {
     const prompts: (string | undefined)[] = [];
     const config = await testConfig();

@@ -320,6 +320,19 @@ body{
    as every other line. */
 .line--playing .line__time{ color:var(--accent); }
 
+/* A moment the listener marked in the room. The existing semantic warning
+   token, not a new colour: this is drawing attention, not asserting success
+   or danger. Only the timestamp and its marker take the colour -- the
+   transcript text itself stays exactly as readable as any other line, same
+   rule as the playing row above. */
+.line--flagged .line__time{ color:var(--warn); }
+.line__flag{
+  display:inline-block;
+  vertical-align:middle;
+  margin-inline-start:.35em;
+  color:var(--warn);
+}
+
 /* ── Jump to live ─────────────────────────────────────────────────────────────
    Appears only when the reader has scrolled away from the bottom. It floats
    above the transcript, so it takes one surface step up plus the deeper shadow
@@ -915,3 +928,16 @@ body{ grid-template-rows:auto auto 1fr; }
 /* Same eyebrow-quiet reason line as the export controls, just reused here
    under a different control. */
 .course-picker .actions__reason{ max-width:170px; }
+
+/* ── Flag control ─────────────────────────────────────────────────────────────
+   Same stacked shape as the course picker: the button on top, its reason
+   line underneath rather than beside it, so a long reason never pushes the
+   record button onto a second line. A flat .ghost button, not a second
+   accent -- record stays the only primary action in the bar. */
+.flag-control{
+  display:flex;
+  flex-direction:column;
+  gap:var(--s1);
+  flex:none;
+}
+.flag-control .actions__reason{ max-width:170px; }

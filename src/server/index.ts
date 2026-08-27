@@ -92,6 +92,21 @@ export function createApp(config: Config, deps: SessionDeps): express.Express {
     },
   );
 
+  app.post("/api/sessions/:id/flag", express.json(), (req, res) => {
+    const session = sessions.get(req.params.id);
+    if (!session) return res.status(404).json({ error: "unknown session" });
+
+    // Same shape of guard as the chunk headers above: a flag with no usable
+    // timestamp is the caller's mistake, not something to record as zero.
+    const atMs = req.body?.atMs;
+    if (!(Number.isFinite(atMs) && atMs >= 0)) {
+      return res.status(400).json({ error: "missing or invalid atMs" });
+    }
+
+    const flag = session.flag(atMs);
+    res.json({ flag });
+  });
+
   app.get("/api/sessions/:id/events", (req, res) => {
     const session = sessions.get(req.params.id);
     if (!session) return res.status(404).json({ error: "unknown session" });

@@ -5,8 +5,11 @@ import { createHistory } from "./history.js";
 import { createBanner } from "./banner.js";
 import { createSilenceTracker, meterPosition } from "./audio/level.js";
 import { createPlayback } from "./playback.js";
+import { createFlags } from "./flags.js";
 
 const recordButton = document.getElementById("record");
+const flagButton = document.getElementById("flag");
+const flagReasonEl = document.getElementById("flag-reason");
 const transcriptEl = document.getElementById("transcript");
 const transcriptReasonEl = document.getElementById("transcript-reason");
 const playerEl = document.getElementById("player");
@@ -175,6 +178,16 @@ function updateCourseReason() {
   courseReasonEl.hidden = !reason;
 }
 
+/** Flagging only means something while a recording clock is actually
+ *  running: there is no "moment" to mark against a page that has never
+ *  started, or one that already stopped. */
+function updateFlagReason() {
+  const reason = recording ? "" : "Flagging needs a recording in progress.";
+  flagButton.disabled = !recording;
+  flagReasonEl.textContent = reason;
+  flagReasonEl.hidden = !reason;
+}
+
 function setMeter(level) {
   if (!meterFillEl) return;
   const position = meterPosition(level);
@@ -221,6 +234,7 @@ let viewMode = "live";
  */
 const liveSource = {
   lines: [],
+  flags: [],
   summary: null, // { kind: "running", summary } | { kind: "markdown", markdown }
   title: null,
   // Fixed for the life of a recording: set from the session-create response,
@@ -256,11 +270,59 @@ const playback = createPlayback({
   },
 });
 
+/**
+ * One key, no typing, no modal: the moment a listener wants marked is
+ * whatever the recording clock reads right now, not whatever the server
+ * happens to be doing with the chunk still in flight.
+ */
+const flags = createFlags({
+  post: (atMs) =>
+    fetch(`/api/sessions/${sessionId}/flag`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ atMs }),
+    }).then(async (res) => {
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? "the server rejected the flag");
+      }
+      return res.json();
+    }),
+  elapsedMs: () => Date.now() - startedAt,
+  setStatus,
+});
+
 /** Whether the line just appended (or about to be) should be clickable. Set
  *  once per render() rather than re-read from displayedSource on every line,
  *  since a chunk arriving mid-recording never changes whether the session as
  *  a whole has audio. */
 let playbackEnabled = false;
+
+/** Chunk indexes a flag has resolved to, for whichever source is on screen.
+ *  Rebuilt once per render() and topped up as "flag" events arrive live,
+ *  the same split appendLine already uses for playbackEnabled. A flag whose
+ *  chunkIndex is still null (the chunk it landed in hasn't been transcribed
+ *  yet) has no row to mark, so it is left out of this set entirely. */
+let flaggedIndices = new Set();
+
+/** Adds the marker once, live or from a past session's own history alike.
+ *  Idempotent so a flag event that outraces its own row (or a re-render) is
+ *  never applied twice. */
+function markRowFlagged(index) {
+  flaggedIndices.add(index);
+  const row = transcriptEl.querySelector(`.line[data-index="${index}"]`);
+  if (!row || row.classList.contains("line--flagged")) return;
+  row.classList.add("line--flagged");
+  // Same Feather-style stroke icon family as every other glyph in this file
+  // (see the hamburger and reconnect icons in index.html): no icon font, no
+  // second library.
+  row.querySelector(".line__time")?.insertAdjacentHTML(
+    "beforeend",
+    '<svg class="line__flag" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+      '<path d="M5 3v18M5 4h13l-3 4 3 4H5" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  );
+}
 
 function updateTranscriptReason(source) {
   playbackEnabled = Boolean(source.hasAudio);
@@ -352,6 +414,10 @@ function appendLine(line) {
   el.append(stamp, document.createTextNode(line.text));
   transcriptEl.append(el);
   if (pinnedToLive) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  // A flag can resolve to this chunk before the line itself has streamed in
+  // (the SSE events don't guarantee an order), so check both ways: on
+  // arrival here, and again in markRowFlagged() when the flag event lands.
+  if (flaggedIndices.has(line.index)) markRowFlagged(line.index);
 }
 
 function renderTranscript(lines) {
@@ -432,6 +498,12 @@ function render(mode, source) {
   playback.setLines(source.lines);
   updateTranscriptReason(source);
 
+  // Rebuilt per source rather than carried over: the live view's flags and a
+  // past session's have nothing to do with each other.
+  flaggedIndices = new Set(
+    (source.flags ?? []).map((f) => f.chunkIndex).filter((i) => i !== null),
+  );
+
   // A past session opens at its beginning and has nothing to jump to; the live
   // view snaps back to the newest line.
   pinnedToLive = mode === "live";
@@ -465,6 +537,7 @@ const drawer = createHistory({
       // chunk index, gaps and all, which is exactly what a click has to name
       // to play the right file.
       lines: session.lines ?? [],
+      flags: session.flags ?? [],
       summary: session.summaryMarkdown
         ? { kind: "markdown", markdown: session.summaryMarkdown }
         : session.runningSummary
@@ -496,6 +569,7 @@ function refreshLibrary() {
 // blank: drawer.library starts as an empty category list.
 populateCourseSelect();
 updateCourseReason();
+updateFlagReason();
 drawer
   .refresh()
   .then(populateCourseSelect)
@@ -517,9 +591,11 @@ async function start() {
   // must not sit above the new one's. Emptied in place rather than reassigned,
   // so anything already holding this array keeps holding the live one.
   liveSource.lines.length = 0;
+  liveSource.flags.length = 0;
   recording = true;
   started = true;
   updateCourseReason();
+  updateFlagReason();
 
   // Recording always happens in the live view. If the user was reading a past
   // session, the panes come back before anything streams into them.
@@ -577,6 +653,15 @@ async function start() {
       }
       if (event.type === "status" && event.failedChunks > 0) {
         setStatus(`${event.failedChunks} chunk(s) failed, audio kept`);
+      }
+      if (event.type === "flag") {
+        liveSource.flags.push(event.flag);
+        // A flag with no chunk yet has nothing on screen to mark; it stays
+        // resolved only in liveSource, ready for the next render() once the
+        // matching line finally streams in.
+        if (event.flag.chunkIndex !== null && viewMode === "live") {
+          markRowFlagged(event.flag.chunkIndex);
+        }
       }
     } catch (error) {
       console.error("[scribe] failed to handle server event", error);
@@ -804,6 +889,7 @@ async function stop() {
 
   recording = false;
   updateCourseReason();
+  updateFlagReason();
 
   // If the final summary failed, markdown is empty: leave the live summary at
   // whatever the last running summary was, rather than overwriting it with
@@ -885,7 +971,30 @@ recordButton.addEventListener("click", () => {
       recording = false;
       started = false;
       updateCourseReason();
+      updateFlagReason();
       exportControls.refresh();
     }
   });
+});
+
+flagButton.addEventListener("click", () => {
+  flags.mark();
+});
+
+// The `f` key is the whole point of this feature: no typing, no modal, one
+// key a listener can hit mid-sentence. It must stay out of the way the
+// instant focus is anywhere text could be entered, or typing a session name
+// in the drawer would silently drop flags into the recording. Modifier keys
+// are left alone too, so Cmd/Ctrl+F for the browser's own find still works.
+document.addEventListener("keydown", (event) => {
+  if (event.key.toLowerCase() !== "f") return;
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  if (!recording) return;
+
+  const target = event.target;
+  const tag = target?.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+
+  event.preventDefault();
+  flags.mark();
 });

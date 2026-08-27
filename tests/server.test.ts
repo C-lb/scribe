@@ -230,4 +230,66 @@ describe("HTTP API", () => {
     expect(res.status).toBe(400);
     server.close();
   });
+
+  it("records a flag against the chunk that was recording at the time", async () => {
+    const { base, server } = await app();
+    const { id } = await (await fetch(`${base}/api/sessions`, { method: "POST" })).json();
+
+    // Wait for the chunk to actually reach the transcript before flagging it:
+    // the route answers 202 before transcription runs, so posting the flag
+    // right away would race the very line it is supposed to land against.
+    const events = await fetch(`${base}/api/sessions/${id}/events`);
+    const reader = events.body!.getReader();
+
+    await fetch(`${base}/api/sessions/${id}/chunk`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "audio/wav",
+        "X-Chunk-Index": "0",
+        "X-Chunk-Start-Ms": "0",
+        "X-Chunk-End-Ms": "20000",
+      },
+      body: Buffer.from("fake wav"),
+    });
+
+    let received = "";
+    while (!received.includes('"type":"transcript"')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      received += new TextDecoder().decode(value);
+    }
+    await reader.cancel();
+
+    const res = await fetch(`${base}/api/sessions/${id}/flag`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ atMs: 12_000 }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).flag).toEqual({ atMs: 12_000, chunkIndex: 0 });
+    server.close();
+  }, 15_000);
+
+  it("rejects a flag with no usable timestamp", async () => {
+    const { base, server } = await app();
+    const { id } = await (await fetch(`${base}/api/sessions`, { method: "POST" })).json();
+    const res = await fetch(`${base}/api/sessions/${id}/flag`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ atMs: "soon" }),
+    });
+    expect(res.status).toBe(400);
+    server.close();
+  });
+
+  it("404s a flag for an unknown session instead of crashing", async () => {
+    const { base, server } = await app();
+    const res = await fetch(`${base}/api/sessions/nope/flag`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ atMs: 1000 }),
+    });
+    expect(res.status).toBe(404);
+    server.close();
+  });
 });
