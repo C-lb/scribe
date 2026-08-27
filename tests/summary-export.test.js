@@ -184,10 +184,10 @@ describe("sanitiseFilename", () => {
 });
 
 describe("exportState", () => {
-  it("is disabled and explains itself while the first summary is still coming", () => {
+  it("is disabled and silent while the first summary is still coming, because the pane says it", () => {
     expect(exportState({ input: null, recording: true, started: true })).toEqual({
       enabled: false,
-      reason: "The first summary appears after about five minutes.",
+      reason: "",
     });
   });
 

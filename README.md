@@ -46,7 +46,7 @@ Above the summary pane are three controls, live for whatever the pane is showing
 - **Save** downloads it as a Markdown file named after the session, like `18-august-2026-1703.md`.
 - **Share** hands it to the operating system's own share sheet, and only appears in browsers that have one.
 
-A control that cannot do anything yet says why, in a line under the buttons rather than only in a tooltip. During a recording with no summary yet, that reason is that the first summary appears after about five minutes. For a past session whose summary failed, it says so.
+A control that cannot do anything yet says why, in a line under the buttons rather than only in a tooltip. For a past session whose summary failed, it says so. During a recording with no summary yet it says nothing, because the pane right below it is already saying the first summary appears after about five minutes, and printing that twice reads as a fault rather than as patience.
 
 ## Where sessions are written
 

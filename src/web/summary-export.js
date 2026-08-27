@@ -98,16 +98,16 @@ export function sanitiseFilename(title, fallbackId) {
 
 /**
  * No dead buttons: either the control works, or it says why it does not —
- * except at page load, before any recording has started, where the summary
- * pane's own placeholder already says the first summary takes about five
- * minutes. Repeating that is fine; inventing a failure that never happened
- * is not, so the reason stays empty until a session actually exists.
+ * except while the first summary is still coming, where the summary pane's
+ * own placeholder already says it takes about five minutes. Saying that twice,
+ * once above the buttons and once in the pane below them, reads as an error
+ * rather than as patience, so only the pane says it. Before any recording has
+ * started there is nothing to explain at all: inventing a failure that never
+ * happened is worse than silence.
  */
 export function exportState({ input, recording, started }) {
   if (input) return { enabled: true, reason: "" };
-  if (recording) {
-    return { enabled: false, reason: "The first summary appears after about five minutes." };
-  }
+  if (recording) return { enabled: false, reason: "" };
   if (!started) return { enabled: false, reason: "" };
   return {
     enabled: false,
