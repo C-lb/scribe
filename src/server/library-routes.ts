@@ -6,6 +6,8 @@ import path from "node:path";
 import type { Config } from "./config.js";
 import { readLines, writeTranscriptFile } from "./transcript-file.js";
 import { linesToMarkdown } from "./transcript.js";
+import { toSrt, toVtt, toPlainText } from "./captions.js";
+import { sanitiseFilename } from "../shared/filename.js";
 import {
   isSessionId,
   defaultTitle,
@@ -108,6 +110,34 @@ async function describeFolders(sessionsDir: string, ids: string[]): Promise<Sess
   );
 }
 
+/**
+ * Two gates, always in this order: the id shape, then the resolved path
+ * sits inside the sessions root. `isSessionId` alone admits only digits and
+ * hyphens today, but the containment check stays regardless, so a future
+ * loosening of that pattern cannot silently reopen a traversal. Shared by
+ * every route where a session id reaches the filesystem, per the reveal and
+ * line-edit routes this follows.
+ */
+function resolveSessionDir(sessionsDir: string, id: string): string | null {
+  if (!isSessionId(id)) return null;
+  const dir = path.resolve(sessionsDir, id);
+  const root = path.resolve(sessionsDir);
+  if (dir !== path.join(root, id) || !dir.startsWith(`${root}${path.sep}`)) return null;
+  return dir;
+}
+
+const CAPTION_FORMATS = {
+  srt: { render: toSrt, contentType: "application/x-subrip; charset=utf-8" },
+  vtt: { render: toVtt, contentType: "text/vtt; charset=utf-8" },
+  txt: { render: toPlainText, contentType: "text/plain; charset=utf-8" },
+} as const;
+
+type CaptionFormat = keyof typeof CAPTION_FORMATS;
+
+function isCaptionFormat(value: string): value is CaptionFormat {
+  return Object.hasOwn(CAPTION_FORMATS, value);
+}
+
 export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
   const router = express.Router();
   const { sessionsDir } = deps.config;
@@ -206,6 +236,31 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
     });
   });
 
+  /**
+   * `:format` after the literal dot rather than a query string, so the
+   * downloaded filename's own extension (via Content-Disposition below)
+   * matches the URL a browser would otherwise save it under.
+   */
+  router.get("/api/sessions/:id/transcript.:format", async (req, res) => {
+    const { id, format } = req.params;
+    const dir = resolveSessionDir(sessionsDir, id);
+    if (!dir) return res.status(400).json({ error: "invalid session id" });
+    if (!isCaptionFormat(format)) return res.status(400).json({ error: "unsupported export format" });
+
+    const { lines } = await readLines(dir);
+    if (lines.length === 0) return res.status(404).json({ error: "unknown session" });
+
+    const file = await readLibrary(sessionsDir);
+    const title = file.entries[id]?.title?.trim() || defaultTitle(id);
+    const { render, contentType } = CAPTION_FORMATS[format];
+    const body = render(lines);
+    const filename = `${sanitiseFilename(title, id)}.${format}`;
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(body);
+  });
+
   router.patch("/api/sessions/:id", async (req, res) => {
     const { id } = req.params;
     if (!isSessionId(id)) return res.status(400).json({ error: "invalid session id" });
@@ -271,15 +326,11 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
 
   router.post("/api/sessions/:id/reveal", async (req, res) => {
     const { id } = req.params;
-    // Two gates: the id shape, then the resolved path. Either alone would
-    // probably do; this is the one route where user input reaches the OS.
-    if (!isSessionId(id)) return res.status(400).json({ error: "invalid session id" });
-
-    const dir = path.resolve(sessionsDir, id);
-    const root = path.resolve(sessionsDir);
-    if (dir !== path.join(root, id) || !dir.startsWith(`${root}${path.sep}`)) {
-      return res.status(400).json({ error: "invalid session id" });
-    }
+    // Two gates, via resolveSessionDir: the id shape, then the resolved path.
+    // Either alone would probably do; this is one of the routes where user
+    // input reaches the OS.
+    const dir = resolveSessionDir(sessionsDir, id);
+    if (!dir) return res.status(400).json({ error: "invalid session id" });
 
     try {
       const info = await stat(dir);
@@ -299,17 +350,12 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
 
   router.patch("/api/sessions/:id/lines/:index", async (req, res) => {
     const { id } = req.params;
-    // Two gates, matching the reveal route above: the id shape, then the
-    // resolved path. SESSION_ID_PATTERN alone admits only digits and hyphens
-    // today, but the second gate stays regardless, so a future loosening of
-    // that regex cannot silently reopen a traversal here.
-    if (!isSessionId(id)) return res.status(400).json({ error: "invalid session id" });
-
-    const dir = path.resolve(sessionsDir, id);
-    const root = path.resolve(sessionsDir);
-    if (dir !== path.join(root, id) || !dir.startsWith(`${root}${path.sep}`)) {
-      return res.status(400).json({ error: "invalid session id" });
-    }
+    // Two gates, via resolveSessionDir: the id shape, then the resolved
+    // path. SESSION_ID_PATTERN alone admits only digits and hyphens today,
+    // but the second gate stays regardless, so a future loosening of that
+    // regex cannot silently reopen a traversal here.
+    const dir = resolveSessionDir(sessionsDir, id);
+    if (!dir) return res.status(400).json({ error: "invalid session id" });
 
     const index = Number(req.params.index);
     if (!Number.isInteger(index) || index < 0) {

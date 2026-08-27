@@ -4,6 +4,7 @@ import {
   exportState,
   sanitiseFilename,
   summaryToPlainText,
+  transcriptExportState,
 } from "../src/web/summary-export.js";
 
 const running = (over = {}) => ({
@@ -231,5 +232,28 @@ describe("buildMarkdownFile", () => {
       markdown: "# Raft\n\nBody.\n",
     });
     expect(file.text).toBe("# Raft\n\nBody.\n");
+  });
+});
+
+describe("transcriptExportState", () => {
+  it("is disabled and silent before any session has started", () => {
+    expect(transcriptExportState({ lineCount: 0, started: false })).toEqual({
+      enabled: false,
+      reason: "",
+    });
+  });
+
+  it("is disabled and honest for a finished session with no transcript lines", () => {
+    expect(transcriptExportState({ lineCount: 0, started: true })).toEqual({
+      enabled: false,
+      reason: "This session has no transcript to export.",
+    });
+  });
+
+  it("is enabled as soon as there is at least one line, even mid-recording", () => {
+    expect(transcriptExportState({ lineCount: 1, started: true })).toEqual({
+      enabled: true,
+      reason: "",
+    });
   });
 });

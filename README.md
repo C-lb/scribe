@@ -53,15 +53,26 @@ Every recording Scribe has ever made is listed in the drawer on the left. The bu
 
 Nothing in the drawer can delete a recording. The organisation file is the only thing it writes, and losing it would lose names and grouping, never audio or a transcript.
 
-## Exporting a summary
+## Exporting
 
-Above the summary pane are three controls, live for whatever the pane is showing, whether that is the running summary of a recording in progress or a past session you have opened:
+Both panes are live for whatever is on screen, whether that is a recording in progress or a past session opened from the drawer. Every export reflects the transcript as it stands right now, including any corrections made through double-clicking a line.
+
+**The summary**, above the summary pane:
 
 - **Copy** puts the summary on the clipboard as plain text, ready to paste into a chat window or a notes app.
 - **Save** downloads it as a Markdown file named after the session, like `18-august-2026-1703.md`.
 - **Share** hands it to the operating system's own share sheet, and only appears in browsers that have one.
 
-A control that cannot do anything yet says why, in a line under the buttons rather than only in a tooltip. For a past session whose summary failed, it says so. During a recording with no summary yet it says nothing, because the pane right below it is already saying the first summary appears after about five minutes, and printing that twice reads as a fault rather than as patience.
+**The transcript**, above the transcript pane:
+
+- **Text** downloads it as plain text, one paragraph per line, no timestamps.
+- **SRT** and **VTT** download it as caption files, one cue per line, numbered from one regardless of any gaps left by a dropped chunk. Cue timing carries the real start and end of each chunk. SRT and VTT are the only two formats here that carry timestamps at all.
+
+A line the model failed to transcribe is never written into any of these three: the `[inaudible ~MM:SS]` placeholder is a note to you, not something that was actually said, so it would misrepresent the recording if it showed up in a caption file or a plain-text export.
+
+**Save as PDF**, next to the summary's own buttons, opens the browser's print dialog on the current session (transcript and summary both) instead of downloading anything itself; choose "Save as PDF" there. This is deliberate rather than a shortcut: a PDF-generation library would have been the single largest dependency in this project, for output every browser already knows how to produce from a styled page. The print view (a `@media print` stylesheet) hides the drawer, every button and reason line, and the audio player, and prints the transcript's timestamps in black on white.
+
+A control that cannot do anything yet says why, in a line under the buttons rather than only in a tooltip. For a past session whose summary failed, or whose transcript has no lines at all, the reason line says so. During a recording with nothing to export yet it says nothing, because the pane right below it is already saying the first summary appears after about five minutes, and printing that twice reads as a fault rather than as patience.
 
 ## Where sessions are written
 

@@ -242,6 +242,101 @@ describe("GET /api/sessions/:id", () => {
   });
 });
 
+describe("GET /api/sessions/:id/transcript.:format", () => {
+  async function sessionWithLines(
+    dir: string,
+    id: string,
+    lines: Array<{ index: number; startMs: number; endMs: number; text: string; failed: boolean }>,
+  ) {
+    await mkdir(path.join(dir, id), { recursive: true });
+    await writeFile(
+      path.join(dir, id, "transcript.json"),
+      JSON.stringify({ version: 1, lines, flags: [] }),
+      "utf8",
+    );
+  }
+
+  it("serves an SRT file with a disposition filename built from the title", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await sessionWithLines(dir, "2026-08-27-10-00-00", [
+        { index: 0, startMs: 0, endMs: 20_000, text: "Hello there", failed: false },
+      ]);
+      await writeFile(
+        path.join(dir, "library.json"),
+        JSON.stringify({
+          version: 1,
+          categories: [],
+          entries: { "2026-08-27-10-00-00": { title: "Raft and Consensus" } },
+        }),
+        "utf8",
+      );
+
+      const res = await fetch(`${base}/api/sessions/2026-08-27-10-00-00/transcript.srt`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-disposition")).toBe(
+        'attachment; filename="raft-and-consensus.srt"',
+      );
+      const body = await res.text();
+      expect(body).toBe("1\n00:00:00,000 --> 00:00:20,000\nHello there\n");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("serves VTT and plain text with the same lines, different shape", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await sessionWithLines(dir, "2026-08-27-10-00-00", [
+        { index: 0, startMs: 0, endMs: 20_000, text: "Hello there", failed: false },
+      ]);
+
+      const vtt = await (await fetch(`${base}/api/sessions/2026-08-27-10-00-00/transcript.vtt`)).text();
+      expect(vtt.startsWith("WEBVTT\n\n")).toBe(true);
+
+      const txt = await (await fetch(`${base}/api/sessions/2026-08-27-10-00-00/transcript.txt`)).text();
+      expect(txt).toBe("Hello there\n");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("404s a session that has no transcript lines at all", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await mkdir(path.join(dir, "2026-08-27-10-00-00"), { recursive: true });
+      const res = await fetch(`${base}/api/sessions/2026-08-27-10-00-00/transcript.srt`);
+      expect(res.status).toBe(404);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("400s an unsupported format", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await sessionWithLines(dir, "2026-08-27-10-00-00", [
+        { index: 0, startMs: 0, endMs: 20_000, text: "Hello there", failed: false },
+      ]);
+      const res = await fetch(`${base}/api/sessions/2026-08-27-10-00-00/transcript.pdf`);
+      expect(res.status).toBe(400);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("400s a session id that fails the shape or containment gate", async () => {
+    const { base, server } = await serve();
+    try {
+      const traversal = encodeURIComponent("../../etc/passwd");
+      const res = await fetch(`${base}/api/sessions/${traversal}/transcript.srt`);
+      expect(res.status).toBe(400);
+    } finally {
+      server.close();
+    }
+  });
+});
+
 const json = (base: string, method: string, url: string, body?: unknown) =>
   fetch(`${base}${url}`, {
     method,

@@ -966,3 +966,48 @@ body{ grid-template-rows:auto auto 1fr; }
   flex:none;
 }
 .flag-control .actions__reason{ max-width:170px; }
+
+/* ── Print ─────────────────────────────────────────────────────────────────
+   "Save as PDF" (app.js) is window.print() on the page as it already stands,
+   not a separate export route -- see the README for why a PDF library was
+   deliberately not added. Everything that is a control rather than session
+   content disappears: the drawer, the header bar's own controls, the audio
+   element (nothing plays on paper), and every disabled-reason line, which
+   exists only to explain a button that is no longer on the page. The two
+   panes stop scrolling and stop being cards -- ink on paper, not a UI. */
+@media print{
+  body{ background:#fff; color:#000; }
+  .bar,
+  .drawer,
+  .scrim,
+  .banner-region,
+  #player,
+  .pane__actions,
+  .actions__reason,
+  .jump{
+    display:none !important;
+  }
+  .panes{
+    display:block;
+    padding:0;
+  }
+  .pane{
+    box-shadow:none;
+    background:#fff;
+    color:#000;
+    border-radius:0;
+    padding:0;
+    overflow:visible;
+  }
+  .pane + .pane{ margin-top:2em; page-break-before:always; }
+  .transcript,
+  .summary{
+    overflow:visible;
+    color:#000;
+  }
+  /* The timestamp is the one thing worth keeping legible against the printed
+     page: everything else in .line__time is a live-view affordance (hover,
+     focus, playing state) that means nothing on paper. */
+  .line__time{ color:#000; }
+  .line--failed{ color:#333; }
+}

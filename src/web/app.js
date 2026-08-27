@@ -1,6 +1,6 @@
 import { createRecorder } from "./audio/recorder.js";
 import { createUploader } from "./upload.js";
-import { createExportControls } from "./summary-export.js";
+import { createExportControls, createTranscriptExportControls } from "./summary-export.js";
 import { createHistory } from "./history.js";
 import { createBanner } from "./banner.js";
 import { createSilenceTracker, meterPosition } from "./audio/level.js";
@@ -416,6 +416,27 @@ const exportControls = createExportControls({
   setStatus,
 });
 
+/** Text, SRT, VTT: same view-not-recording wiring as exportControls above,
+ *  reading whichever source is on screen rather than the live recorder's own
+ *  state. lineCount is read fresh on every refresh() rather than cached, so
+ *  a line arriving mid-recording (SSE, below) turns the row on the moment
+ *  there is something to export. */
+const transcriptControls = createTranscriptExportControls({
+  root: document.getElementById("transcript-actions"),
+  getState: () => ({
+    lineCount: displayedSource.lines.length,
+    sessionId: displayedSource.sessionId,
+    started: displayedSource.started,
+  }),
+  setStatus,
+});
+
+document.getElementById("summary-print").addEventListener("click", () => {
+  // The browser's own print output, not a PDF library: see the README for
+  // why. @media print in styles.css hides everything but the two panes.
+  window.print();
+});
+
 function formatElapsed(ms) {
   const total = Math.floor(ms / 1000);
   const minutes = String(Math.floor(total / 60)).padStart(2, "0");
@@ -563,6 +584,7 @@ function render(mode, source) {
 
   document.body.dataset.view = mode;
   exportControls.refresh();
+  transcriptControls.refresh();
 }
 
 function setStatus(text) {
@@ -689,7 +711,10 @@ async function start() {
       const event = JSON.parse(message.data);
       if (event.type === "transcript") {
         liveSource.lines.push(event.line);
-        if (viewMode === "live") appendLine(event.line);
+        if (viewMode === "live") {
+          appendLine(event.line);
+          transcriptControls.refresh();
+        }
       }
       if (event.type === "summary") {
         liveSource.summary = { kind: "running", summary: event.summary };
@@ -749,6 +774,7 @@ async function start() {
   banner.clear();
 
   exportControls.refresh();
+  transcriptControls.refresh();
 
   startedAt = Date.now();
   timerHandle = setInterval(() => {
@@ -951,6 +977,7 @@ async function stop() {
     if (viewMode === "live") renderFinal(markdown);
   }
   exportControls.refresh();
+  transcriptControls.refresh();
 
   events.close();
   meterEl.hidden = true;
@@ -1024,6 +1051,7 @@ recordButton.addEventListener("click", () => {
       updateCourseReason();
       updateFlagReason();
       exportControls.refresh();
+      transcriptControls.refresh();
     }
   });
 });

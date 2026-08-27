@@ -4,6 +4,8 @@
  * and both end as text a person can paste into a chat window.
  */
 
+import { sanitiseFilename } from "../shared/filename.js";
+
 function collapseBlankRuns(lines) {
   const out = [];
   for (const line of lines) {
@@ -86,15 +88,7 @@ export function summaryToPlainText(input) {
   return "";
 }
 
-export function sanitiseFilename(title, fallbackId) {
-  const slug = String(title ?? "")
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9_-]/g, "")
-    .replace(/-{2,}/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug || fallbackId;
-}
+export { sanitiseFilename };
 
 /**
  * No dead buttons: either the control works, or it says why it does not —
@@ -122,6 +116,61 @@ export function buildMarkdownFile({ title, sessionId, markdown }) {
   // own ("# ") — an H2 or deeper still needs the document-level title above it.
   const text = /^#(?!#)\s/.test(body.trimStart()) ? body : `${heading}\n\n${body}`;
   return { name: `${sanitiseFilename(title, sessionId)}.md`, text };
+}
+
+/**
+ * Same "no dead buttons" contract as exportState above, with the same
+ * silent/honest split: before anything has started there is nothing to
+ * explain, and once a session has run with no lines in it, the row under the
+ * buttons says so plainly rather than leaving three disabled buttons
+ * unexplained.
+ */
+export function transcriptExportState({ lineCount, started }) {
+  if (lineCount > 0) return { enabled: true, reason: "" };
+  if (!started) return { enabled: false, reason: "" };
+  return { enabled: false, reason: "This session has no transcript to export." };
+}
+
+/**
+ * Text, SRT and VTT are all rendered server-side (src/server/captions.ts)
+ * from the session's own lines, so a click here is a navigation to the
+ * download route, not a client-side build the way Save (Markdown) is: the
+ * server already excludes failed chunks and knows the real cue numbering,
+ * and duplicating that logic in the browser would be a second place for it
+ * to drift out of sync with the file the browser actually gets.
+ */
+export function createTranscriptExportControls({ root, getState, setStatus }) {
+  const buttons = {
+    txt: { el: root.querySelector("#transcript-export-text"), label: "text" },
+    srt: { el: root.querySelector("#transcript-export-srt"), label: "SRT" },
+    vtt: { el: root.querySelector("#transcript-export-vtt"), label: "VTT" },
+  };
+  const reasonEl = document.getElementById("transcript-export-reason");
+
+  function refresh() {
+    const { enabled, reason } = transcriptExportState(getState());
+    for (const { el } of Object.values(buttons)) {
+      el.disabled = !enabled;
+      el.title = reason;
+    }
+    reasonEl.textContent = reason;
+    reasonEl.hidden = !reason;
+  }
+
+  for (const [format, { el, label }] of Object.entries(buttons)) {
+    el.addEventListener("click", () => {
+      const { sessionId } = getState();
+      if (!sessionId) return;
+      // A direct navigation, not fetch+blob: the route answers with
+      // Content-Disposition: attachment, so the browser downloads it without
+      // leaving the page, the same as clicking a plain download link.
+      window.location.href = `/api/sessions/${sessionId}/transcript.${format}`;
+      setStatus(`Downloading the transcript as ${label}`);
+    });
+  }
+
+  refresh();
+  return { refresh };
 }
 
 /**

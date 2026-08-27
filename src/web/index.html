@@ -99,7 +99,15 @@
 
     <main class="panes">
       <section class="pane" aria-labelledby="transcript-heading">
-        <h2 id="transcript-heading">Transcript</h2>
+        <div class="pane__head">
+          <h2 id="transcript-heading">Transcript</h2>
+          <div class="pane__actions" id="transcript-actions">
+            <button id="transcript-export-text" class="ghost" type="button">Text</button>
+            <button id="transcript-export-srt" class="ghost" type="button">SRT</button>
+            <button id="transcript-export-vtt" class="ghost" type="button">VTT</button>
+          </div>
+        </div>
+        <p id="transcript-export-reason" class="actions__reason" aria-live="polite" hidden></p>
         <audio id="player" preload="none"></audio>
         <p id="transcript-reason" class="actions__reason" aria-live="polite" hidden></p>
         <div id="transcript" class="transcript" role="log" aria-live="polite"></div>
@@ -113,6 +121,7 @@
             <button id="summary-copy" class="ghost" type="button">Copy</button>
             <button id="summary-save" class="ghost" type="button">Save</button>
             <button id="summary-share" class="ghost" type="button" hidden>Share</button>
+            <button id="summary-print" class="ghost" type="button" title="Opens the browser's print dialog; choose Save as PDF there">Save as PDF</button>
           </div>
         </div>
         <p id="summary-actions-reason" class="actions__reason" aria-live="polite" hidden></p>
