@@ -274,6 +274,84 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
     );
   }
 
+  /**
+   * The rename editor's shape (replace, edit, commit on settle, roll back on
+   * failure), widened to a textarea because a term list is several lines, not
+   * one. It replaces the session rows rather than the heading: the heading
+   * text itself is not what is being edited here, and the rows are the one
+   * other block already sitting directly under it.
+   */
+  function editTerms(categoryId) {
+    const section = listEl.querySelector(`.cat[data-category-id="${cssId(categoryId)}"]`);
+    const rows = section?.querySelector(".cat__rows");
+    const category = library.categories.find((c) => c.id === categoryId);
+    if (!section || !rows || !category) return;
+
+    const terms = category.terms ?? [];
+    const textarea = document.createElement("textarea");
+    textarea.className = "inline-edit inline-edit--terms";
+    textarea.value = terms.join("\n");
+    textarea.placeholder = "One term per line";
+    textarea.setAttribute("aria-label", `Terms for ${category.name}`);
+    rows.replaceWith(textarea);
+    editing = true;
+    textarea.focus();
+
+    for (const type of ["click", "dblclick", "mousedown"]) {
+      textarea.addEventListener(type, (event) => event.stopPropagation());
+    }
+
+    let settled = false;
+    const finish = async (save) => {
+      if (settled) return;
+      settled = true;
+      const value = textarea.value;
+      textarea.replaceWith(rows);
+      editing = false;
+
+      if (!save) {
+        flushPaint();
+        return;
+      }
+
+      const cleaned = value
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+      try {
+        const payload = await api("PATCH", `/api/categories/${categoryId}`, { terms: cleaned });
+        applyPayload(payload);
+        // The count comes back from the server rather than from `cleaned`,
+        // because updateCategory also caps the list and each entry's length:
+        // this reports what was actually kept, not what was typed.
+        const saved = payload.categories.find((c) => c.id === categoryId)?.terms ?? [];
+        setStatus(`Saved ${saved.length} term${saved.length === 1 ? "" : "s"} for ${category.name}.`);
+      } catch (error) {
+        setStatus(`Could not save that term list: ${error.message}`);
+        await refresh().catch(() => {});
+      } finally {
+        flushPaint();
+      }
+    };
+
+    textarea.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        finish(false);
+        return;
+      }
+      // Plain Enter has to stay a newline, unlike the single-line rename
+      // editor: a term list needs multiple lines. Cmd/Ctrl+Enter is the save
+      // shortcut instead.
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        finish(true);
+      }
+    });
+    textarea.addEventListener("blur", () => finish(true));
+  }
+
   /* ── Context menu ──────────────────────────────────────────────────────── */
 
   const menu = document.createElement("div");
@@ -533,7 +611,10 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
   }
 
   function categoryItems(category) {
-    const items = [{ label: "Rename", run: () => renameCategory(category.id) }];
+    const items = [
+      { label: "Rename", run: () => renameCategory(category.id) },
+      { label: "Edit terms", run: () => editTerms(category.id) },
+    ];
 
     // The keyboard's way to do what a heading drag does. Uncategorised is not
     // in this list at all, so it is never a position either item can reach.

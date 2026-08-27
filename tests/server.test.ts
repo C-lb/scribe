@@ -175,4 +175,59 @@ describe("HTTP API", () => {
     expect(after.categories[0].sessions[0].live).toBe(false);
     server.close();
   });
+
+  it("files a new session into its course and binds the course's terms into the bias prompt", async () => {
+    const { base, server, deps } = await app();
+
+    const category = await (
+      await fetch(`${base}/api/categories`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "BUSI 520" }),
+      })
+    ).json();
+    const categoryId = category.categories[0].id;
+    await fetch(`${base}/api/categories/${categoryId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ terms: ["Raft"] }),
+    });
+
+    const created = await (
+      await fetch(`${base}/api/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ categoryId }),
+      })
+    ).json();
+
+    await fetch(`${base}/api/sessions/${created.id}/chunk`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "audio/wav",
+        "X-Chunk-Index": "1",
+        "X-Chunk-Start-Ms": "0",
+        "X-Chunk-End-Ms": "20000",
+      },
+      body: Buffer.from("fake wav"),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(deps.transcribe.mock.calls[0][0].prompt).toBe("Raft.");
+
+    const library = await (await fetch(`${base}/api/library`)).json();
+    expect(library.categories[0].sessions.map((s: { id: string }) => s.id)).toContain(created.id);
+    server.close();
+  });
+
+  it("400s session creation for an unknown categoryId rather than recording unfiled", async () => {
+    const { base, server } = await app();
+    const res = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ categoryId: "cat_nope" }),
+    });
+    expect(res.status).toBe(400);
+    server.close();
+  });
 });

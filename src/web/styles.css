@@ -572,6 +572,15 @@ body[data-sidebar="open"] .drawer{ display:flex; }
 }
 .inline-edit:focus{ outline:2px solid var(--accent); outline-offset:1px; }
 
+/* The term editor: same field, just tall enough to hold several lines and
+   resizable when a course has more terms than that. */
+.inline-edit--terms{
+  display:block;
+  min-height:calc(var(--s5) * 3);
+  line-height:var(--lh-body);
+  resize:vertical;
+}
+
 .scrim{ display:none; }
 
 @media (max-width:900px){
@@ -869,3 +878,40 @@ body{ grid-template-rows:auto auto 1fr; }
 .mic-select:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
 /* Amber only once the device has been shown to be dead, never by default. */
 .meter[data-state="silent"] .mic-select{ border-color:var(--warn); color:var(--warn); }
+
+/* ── Course picker ────────────────────────────────────────────────────────────
+   Stacked, not the meter's side-by-side row: the label and the select are two
+   lines on purpose, per house rule, and unlike the meter this control has to
+   be usable before a recording exists, so it is never hidden the way the
+   meter is. */
+.course-picker{
+  display:flex;
+  flex-direction:column;
+  gap:var(--s1);
+  flex:none;
+}
+.course-picker__label{
+  display:block;
+  font-size:var(--t-cap);
+  line-height:var(--lh-tight);
+  letter-spacing:var(--tr-cap);
+  color:var(--ink-3);
+}
+.course-select{
+  max-width:170px;
+  padding:var(--s1) var(--s2);
+  border:1px solid var(--line);
+  border-radius:var(--r-sm);
+  background:var(--surface-1);
+  color:var(--ink-2);
+  font:500 var(--t-cap)/var(--lh-tight) var(--font);
+  letter-spacing:var(--tr-cap);
+  text-overflow:ellipsis;
+  cursor:pointer;
+}
+.course-select:hover{ background:var(--surface-2); color:var(--ink); }
+.course-select:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+.course-select:disabled{ opacity:.6; cursor:not-allowed; }
+/* Same eyebrow-quiet reason line as the export controls, just reused here
+   under a different control. */
+.course-picker .actions__reason{ max-width:170px; }

@@ -26,13 +26,28 @@ npm run dev
 
 Open `http://localhost:4747`, grant microphone access, and press "Start recording". Speak normally; the transcript fills in a line at a time and the summary pane updates every few minutes. Press "Stop recording" to end the session and write the final notes.
 
+## Course term lists
+
+The "Course" picker in the header binds a category's term list into the recording you are about to start: it goes in front of Whisper's bias prompt on every chunk, and it corrects the transcript text that comes back before that text ever gets written down. This is what fixes the drift described under "Known limitations" below, where a mistranscription used to enter the bias prompt's own tail and compound for the rest of the lecture.
+
+The correction is two-tier and deliberately conservative:
+
+1. **Exact match, case-insensitive.** "raft" becomes "Raft".
+2. **One letter of difference, gated.** Only for terms of four characters or more, only for a word not already an exact match for some other term, and only when the word's first letter matches the term's. "RAF" becomes "Raft"; "daft" does not, even though it is also one substitution away, because Whisper's own drift clips or garbles the tail of a word far more often than the head.
+
+The choice is fixed once a recording starts: switching mid-lecture would mean the bias prompt on chunk 40 was built from a different vocabulary than chunk 1, which is confusing to debug and does not obviously help. Pick the course before pressing "Start recording".
+
+**Editing a term list.** Right-click a category heading in the drawer and choose "Edit terms" to open a one-term-per-line editor. Cmd/Ctrl+Enter or clicking away saves it; Escape cancels. The list is capped at 100 terms of 60 characters each, which is generous for a course's worth of proper nouns and jargon and small enough that nobody pastes in a textbook by accident.
+
+**Known gap: no automatic seeding from a syllabus.** Populating a term list from an uploaded document with Claude was out of scope for this pass. It would need a file upload path and a way to extract text from a PDF, and neither was worth adding as a new dependency for this task. Term lists are typed in by hand for now.
+
 ## The sessions drawer
 
 Every recording Scribe has ever made is listed in the drawer on the left. The button in the header opens and closes it, and it remembers which way you left it across reloads. A session with no name of its own shows its date, like "18 August 2026, 17:03".
 
 - **Reading a past session.** Click a row to load its saved transcript and summary into the panes. This only works while nothing is recording: the transcript pane belongs to the live lecture, so during a recording the status line says "Stop recording to read past sessions" instead. The row for a running recording is marked "Recording" and clicking it takes you back to the live view.
 - **Renaming.** Double-click a row, or right-click it and choose Rename. Type the new name and press Enter, or Escape to abandon it. Clearing the name entirely puts the date back.
-- **Categories.** "New category" adds a heading and drops you straight into naming it. Drag a row onto a heading to file it there, or right-click a row and pick "Move to". Headings rename the same way rows do, and right-clicking one offers "Delete category", which takes two clicks to confirm. Deleting a heading never touches a recording: its sessions fall back to Uncategorised.
+- **Categories.** "New category" adds a heading and drops you straight into naming it. Drag a row onto a heading to file it there, or right-click a row and pick "Move to". Headings rename the same way rows do, and right-clicking one offers "Delete category", which takes two clicks to confirm. Deleting a heading never touches a recording: its sessions fall back to Uncategorised. Right-click a heading and choose "Edit terms" to set the vocabulary a course's recordings bind into transcription; see "Course term lists" above.
 - **Reveal in Finder.** Right-click a row and choose it to open that session's folder.
 - **Restore library.** The names and categories live in `sessions/library.json`, separately from the recordings. Scribe copies that file when it starts, and "Restore library" puts the copy back, so an organising session that went wrong can be undone. It also takes two clicks. Restoring only reaches back to when Scribe was opened; the copies it replaces are kept under `sessions/.library-backups/archive/` if you need an older one by hand.
 
@@ -93,6 +108,8 @@ The live suites make real API calls and spend real money (a few cents at most pe
 **Chunked transcription is less accurate than one long file.** Whisper does better with more context: a single 90-minute file gives it the whole lecture's vocabulary and phrasing to lean on, where a 20-second chunk only has the trailing transcript text passed as a bias prompt. This is a deliberate trade for low latency. Because the raw audio is kept on disk (`audio/NNNN.wav`, unless `SCRIBE_KEEP_AUDIO=false`), a full, more accurate re-transcription from the concatenated audio is always possible after the fact. The live transcript is optimised for immediacy, not for being the final word.
 
 This is not theoretical. It was observed directly during verification. A synthesised lecture on the Raft consensus protocol was transcribed correctly as "Raft" in the first two chunks, then drifted to "raft" (chunk 3), then to "RAF" for every chunk from the fifth on ("makes RAF tolerant of network partitions", "RAF avoids this by using the term number", "RAF gives you a practical way..."). The 200-character trailing-transcript bias prompt passed to Whisper reduces this kind of drift but clearly does not prevent it once a mistranscription has entered the prompt's own tail. A reader using the live transcript to revise from should treat unfamiliar proper nouns and technical terms as provisional and check them against the kept audio or a full re-transcription, not take the live spelling as authoritative.
+
+A course term list (see "Course term lists" above) is the direct fix for this specific failure: picking a course whose list includes "Raft" both biases Whisper toward it and corrects "RAF" back to "Raft" before it can enter the next chunk's prompt. It only helps for vocabulary you have actually typed in, though, so the general caution above still applies to anything not in the list.
 
 **No speaker diarisation.** The transcript doesn't distinguish who is speaking. A lecturer and a student asking a question both show up as plain text with no speaker label.
 

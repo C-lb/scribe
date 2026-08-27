@@ -194,4 +194,24 @@ describe("Session", () => {
     await session.stop();
     expect(session.isRecording).toBe(false);
   });
+
+  it("puts the glossary in front of the bias prompt and corrects drift", async () => {
+    const prompts: (string | undefined)[] = [];
+    const config = await testConfig();
+    const session = await Session.create(config, {
+      ...okDeps(),
+      transcribe: async ({ prompt }) => {
+        prompts.push(prompt);
+        return "makes RAF tolerant";
+      },
+    }, ["Raft"]);
+
+    await session.ingestChunk(chunk(1));
+    await session.ingestChunk(chunk(2));
+
+    expect(prompts[0]).toBe("Raft.");
+    // The second prompt carries the corrected tail, never the drifted one.
+    expect(prompts[1]).toContain("Raft");
+    expect(prompts[1]).not.toContain("RAF ");
+  });
 });

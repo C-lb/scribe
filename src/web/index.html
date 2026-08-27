@@ -23,6 +23,15 @@
         </svg>
       </button>
       <h1>Scribe</h1>
+      <div class="course-picker">
+        <label class="course-picker__label" for="course">Course</label>
+        <select
+          id="course"
+          class="course-select"
+          title="Binds that course's term list into transcription for this recording"
+        ></select>
+        <p id="course-reason" class="actions__reason" hidden></p>
+      </div>
       <div class="bar__meta">
         <span id="timer" class="timer">00:00</span>
         <span id="status" class="status" aria-live="polite"></span>

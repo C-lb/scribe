@@ -5,6 +5,7 @@ import { Transcript } from "./transcript.js";
 import { writeTranscriptFile, type TranscriptFlag } from "./transcript-file.js";
 import { EventBroker } from "./events.js";
 import { filterChunkText } from "./hallucination.js";
+import { promptPrefix, correct } from "./glossary.js";
 import { joinWavs } from "./wav-join.js";
 import type { RunningSummary } from "./claude.js";
 
@@ -42,6 +43,10 @@ export class Session {
     readonly dir: string,
     private readonly config: Config,
     private readonly deps: SessionDeps,
+    /** The course's term list, bound in at creation and fixed for the whole
+     *  recording -- the same "fixed once recording starts" rule the course
+     *  picker in the header enforces on the browser side. */
+    private readonly terms: string[],
   ) {
     this.transcript = new Transcript(path.join(dir, "transcript.md"));
     this.lastSummaryAt = this.now();
@@ -51,13 +56,13 @@ export class Session {
     return this.deps.now ? this.deps.now() : Date.now();
   }
 
-  static async create(config: Config, deps: SessionDeps): Promise<Session> {
+  static async create(config: Config, deps: SessionDeps, terms: string[] = []): Promise<Session> {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const id = `${stamp.slice(0, 10)}-${stamp.slice(11, 19)}`;
     const dir = path.join(config.sessionsDir, id);
     await mkdir(dir, { recursive: true });
     if (config.keepAudio) await mkdir(path.join(dir, "audio"), { recursive: true });
-    return new Session(id, dir, config, deps);
+    return new Session(id, dir, config, deps, terms);
   }
 
   /**
@@ -91,11 +96,19 @@ export class Session {
 
       this.audioSeconds += (endMs - startMs) / 1000;
 
-      const prompt = this.transcript.tail(200) || undefined;
+      // Terms go in front of the trailing transcript, not instead of it.
+      // Whisper's prompt is a bias, not a rule, and the tail is what keeps a
+      // sentence continuous across a chunk boundary.
+      const prefix = promptPrefix(this.terms);
+      const tail = this.transcript.tail(200);
+      const prompt = [prefix, tail].filter(Boolean).join(" ") || undefined;
       let line;
       try {
         const raw = await this.deps.transcribe({ audio: input.audio, prompt });
-        const text = filterChunkText(raw);
+        // Corrected here rather than at read time, so a drifted term never
+        // reaches the next chunk's bias prompt. That feedback loop is what
+        // turned one bad "RAF" into every later chunk saying "RAF".
+        const text = correct(filterChunkText(raw), this.terms);
 
         // A chunk the filter emptied is a silence artefact, not a failure, and
         // not a line. Recording nothing is the whole point: an artefact written

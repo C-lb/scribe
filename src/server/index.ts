@@ -8,7 +8,7 @@ import { createGroqClient } from "./groq.js";
 import { createSummariser } from "./claude.js";
 import { createLibraryRouter } from "./library-routes.js";
 import { createAudioRouter } from "./audio-routes.js";
-import { snapshotLibrary, defaultTitle } from "./library.js";
+import { snapshotLibrary, defaultTitle, readLibrary, writeLibrary, setEntry } from "./library.js";
 
 // __dirname does not exist in ES modules.
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -18,10 +18,47 @@ export function createApp(config: Config, deps: SessionDeps): express.Express {
   const app = express();
   const sessions = new Map<string, Session>();
 
-  app.post("/api/sessions", async (_req, res) => {
+  app.post("/api/sessions", express.json(), async (req, res) => {
     try {
-      const session = await Session.create(config, deps);
+      // categoryId is optional: recording with no course picked stays exactly
+      // as it was before this task, an unfiled session with an empty term list.
+      const rawCategoryId = req.body?.categoryId;
+      let categoryId: string | undefined;
+      let terms: string[] = [];
+      if (rawCategoryId !== undefined && rawCategoryId !== null) {
+        categoryId = String(rawCategoryId);
+        const file = await readLibrary(config.sessionsDir);
+        const category = file.categories.find((c) => c.id === categoryId);
+        // An unknown categoryId is the caller's mistake (a stale drawer, a
+        // deleted category raced against a start-recording click), not a
+        // reason to silently record without the terms the user thinks are
+        // bound in.
+        if (!category) return res.status(400).json({ error: "unknown category" });
+        terms = category.terms ?? [];
+      }
+
+      const session = await Session.create(config, deps, terms);
       sessions.set(session.id, session);
+
+      if (categoryId) {
+        // Filed straight away so the drawer shows it under its course from
+        // the first render, rather than in Uncategorised until the user
+        // happens to move it. Best-effort: a library write failure here must
+        // not fail session creation, since the recording itself already
+        // exists and losing the filing is recoverable by hand later.
+        try {
+          const file = await readLibrary(config.sessionsDir);
+          const next = setEntry(file, session.id, { categoryId });
+          // Every key already in next.entries is passed as "known", so this
+          // write only adds the new entry and never prunes an existing one --
+          // pruning belongs to the routes in library-routes.ts, which have
+          // the full folder listing this handler does not.
+          await writeLibrary(config.sessionsDir, next, Object.keys(next.entries));
+        } catch (error) {
+          console.error(`[scribe] failed to file session ${session.id} into its category:`, error);
+        }
+      }
+
       // The title goes back with the id so the browser never has to invent a
       // name for the recording it just started: the export filename mid-record
       // then matches the one the drawer gives the same session afterwards.

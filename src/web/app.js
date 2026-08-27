@@ -16,6 +16,8 @@ const timerEl = document.getElementById("timer");
 const jumpButton = document.getElementById("jump");
 const reconnectButton = document.getElementById("reconnect");
 const micSelect = document.getElementById("mic-select");
+const courseSelect = document.getElementById("course");
+const courseReasonEl = document.getElementById("course-reason");
 const meterEl = document.getElementById("meter");
 const meterTrackEl = document.getElementById("meter-track");
 const meterFillEl = document.getElementById("meter-fill");
@@ -107,6 +109,70 @@ async function refreshDevices() {
     micSelect.append(option);
   }
   if (saved && inputs.some((d) => d.deviceId === saved)) micSelect.value = saved;
+}
+
+const COURSE_STORAGE_KEY = "scribe.courseId";
+
+/**
+ * Which course a new recording files itself under, and whose term list binds
+ * into transcription. Remembered the same way the microphone choice is: the
+ * common case is one course's lectures recorded back to back, so re-picking
+ * it every time would be pure friction.
+ */
+function loadCourseId() {
+  try {
+    return localStorage.getItem(COURSE_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function saveCourseId(id) {
+  try {
+    if (id) localStorage.setItem(COURSE_STORAGE_KEY, id);
+    else localStorage.removeItem(COURSE_STORAGE_KEY);
+  } catch {
+    // Preference lost, the next recording just starts unfiled.
+  }
+}
+
+/**
+ * Rebuilt from the library on every refresh rather than kept in step by hand,
+ * the same disposable-view approach the drawer itself uses: this select never
+ * becomes a second source of truth for what categories exist.
+ */
+function populateCourseSelect() {
+  const saved = loadCourseId();
+  const previous = courseSelect.value;
+  courseSelect.replaceChildren();
+
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "No course";
+  courseSelect.append(none);
+
+  for (const category of drawer.library.categories) {
+    // Uncategorised is not a real LibraryCategory: it has no id a session can
+    // be filed under and no term list to bind in.
+    if (category.id === "uncategorised") continue;
+    const option = document.createElement("option");
+    option.value = category.id;
+    option.textContent = category.name;
+    courseSelect.append(option);
+  }
+
+  const known = new Set([...courseSelect.options].map((o) => o.value));
+  // Prefer whatever was already showing (a rename or reorder just landed),
+  // then the remembered choice, then "No course" -- never silently jump to a
+  // different course because the saved one was deleted.
+  courseSelect.value = known.has(previous) ? previous : known.has(saved) ? saved : "";
+}
+
+function updateCourseReason() {
+  const reason = recording ? "The course is fixed once recording starts." : "";
+  courseSelect.disabled = recording;
+  courseReasonEl.textContent = reason;
+  courseReasonEl.hidden = !reason;
 }
 
 function setMeter(level) {
@@ -423,10 +489,21 @@ const drawer = createHistory({
 /** A drawer that failed to repaint must not overwrite the recording's own
  *  status line, so this one only reports to the console. */
 function refreshLibrary() {
-  drawer.refresh().catch((error) => console.error("[scribe] library refresh failed", error));
+  drawer.refresh().then(populateCourseSelect).catch((error) => console.error("[scribe] library refresh failed", error));
 }
 
-drawer.refresh().catch((error) => setStatus(`Could not load the library: ${error.message}`));
+// A default the select shows before the first refresh lands, so it is never
+// blank: drawer.library starts as an empty category list.
+populateCourseSelect();
+updateCourseReason();
+drawer
+  .refresh()
+  .then(populateCourseSelect)
+  .catch((error) => setStatus(`Could not load the library: ${error.message}`));
+
+courseSelect.addEventListener("change", () => {
+  saveCourseId(courseSelect.value);
+});
 document.getElementById("scrim").addEventListener("click", () => drawer.close());
 
 async function start() {
@@ -442,6 +519,7 @@ async function start() {
   liveSource.lines.length = 0;
   recording = true;
   started = true;
+  updateCourseReason();
 
   // Recording always happens in the live view. If the user was reading a past
   // session, the panes come back before anything streams into them.
@@ -449,7 +527,24 @@ async function start() {
   drawer.clearOpen();
   setStatus("");
 
-  const created = await fetch("/api/sessions", { method: "POST" });
+  const created = await fetch("/api/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    // Omitted rather than sent as "" when no course is picked: the server
+    // treats a present-but-empty categoryId as an id to look up, not as "no
+    // course", so JSON.stringify dropping the undefined key is what keeps an
+    // unfiled recording unfiled.
+    body: JSON.stringify({ categoryId: courseSelect.value || undefined }),
+  });
+  // Only reachable if the picked course was deleted between populating the
+  // select and clicking Start, since the select never offers an id the
+  // library does not have. Thrown here rather than pressed on with an
+  // undefined session id, which the recordButton click handler's own catch
+  // already knows how to report and roll back.
+  if (!created.ok) {
+    const body = await created.json().catch(() => ({}));
+    throw new Error(body.error ?? "could not create a session");
+  }
   // The server names the session, so an export taken mid-recording and one
   // taken after reopening the same session from the drawer produce the same
   // filename. Deriving a second date format here is how they drifted apart.
@@ -708,6 +803,7 @@ async function stop() {
   const { markdown } = await response.json();
 
   recording = false;
+  updateCourseReason();
 
   // If the final summary failed, markdown is empty: leave the live summary at
   // whatever the last running summary was, rather than overwriting it with
@@ -788,6 +884,7 @@ recordButton.addEventListener("click", () => {
     if (wasStarting && (recording || started)) {
       recording = false;
       started = false;
+      updateCourseReason();
       exportControls.refresh();
     }
   });

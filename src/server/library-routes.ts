@@ -225,13 +225,18 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
   });
 
   router.patch("/api/categories/:id", async (req, res) => {
-    const patch: { name?: string; order?: number } = {};
+    const patch: { name?: string; order?: number; terms?: unknown } = {};
     if ("name" in req.body) patch.name = String(req.body.name);
     if ("order" in req.body) {
       const order = Number(req.body.order);
       if (!Number.isFinite(order)) return res.status(400).json({ error: "order must be a finite number" });
       patch.order = order;
     }
+    // Passed through as-is rather than coerced here: updateCategory's own
+    // validation (array shape, string elements) is what turns a bad payload
+    // into the named Error mutate() reports as a 400, per the convention the
+    // rest of this route follows for anything more than a scalar field.
+    if ("terms" in req.body) patch.terms = req.body.terms;
     await mutate(res, (file) => updateCategory(file, req.params.id, patch));
   });
 

@@ -6,6 +6,9 @@ export interface LibraryCategory {
   id: string;
   name: string;
   order: number;
+  /** Vocabulary that biases and corrects transcription for sessions filed
+   *  under this category. Absent, not empty, when nobody has set one. */
+  terms?: string[];
 }
 
 export interface LibraryEntry {
@@ -126,6 +129,10 @@ export interface LibraryGroup {
   id: string;
   name: string;
   sessions: SessionRow[];
+  /** Carried through so the drawer can open the term editor pre-filled
+   *  without a second round trip. Absent for Uncategorised, which has no
+   *  backing LibraryCategory to hold a list on. */
+  terms?: string[];
 }
 
 export interface LibraryView {
@@ -183,6 +190,7 @@ export function mergeLibrary(
       id: category.id,
       name: category.name,
       sessions: buckets.get(category.id) ?? [],
+      ...(category.terms && category.terms.length > 0 ? { terms: category.terms } : {}),
     }));
 
   const loose = buckets.get(UNCATEGORISED_ID)!;
@@ -258,10 +266,15 @@ export function createCategory(file: LibraryFile, name: string, id: string): Lib
   return next;
 }
 
+/** Cap purely for the term list: generous enough for a real syllabus's worth
+ *  of vocabulary, small enough that nobody pastes in a textbook by accident. */
+const MAX_TERMS = 100;
+const MAX_TERM_LENGTH = 60;
+
 export function updateCategory(
   file: LibraryFile,
   id: string,
-  patch: { name?: string; order?: number },
+  patch: { name?: string; order?: number; terms?: unknown },
 ): LibraryFile {
   requireCategory(file, id);
   const next = clone(file);
@@ -274,6 +287,20 @@ export function updateCategory(
   if (patch.order !== undefined) {
     if (!Number.isInteger(patch.order)) throw new Error("order must be an integer");
     category.order = patch.order;
+  }
+  if (patch.terms !== undefined) {
+    if (!Array.isArray(patch.terms)) throw new Error("terms must be an array of strings");
+    // Trim and drop empties first, then cap: the cap counts terms that
+    // actually mean something, not blank lines a textarea happens to carry.
+    const cleaned: string[] = [];
+    for (const entry of patch.terms) {
+      if (typeof entry !== "string") throw new Error("each term must be a string");
+      const trimmed = entry.trim();
+      if (!trimmed) continue;
+      if (cleaned.length >= MAX_TERMS) break;
+      cleaned.push(trimmed.slice(0, MAX_TERM_LENGTH));
+    }
+    category.terms = cleaned;
   }
   return next;
 }
