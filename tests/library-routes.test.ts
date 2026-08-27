@@ -173,6 +173,73 @@ describe("GET /api/sessions/:id", () => {
       server.close();
     }
   });
+
+  it("returns structured lines and flags from transcript.json when present", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      const sessionDir = path.join(dir, "2026-08-18-17-03-30");
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(path.join(sessionDir, "meta.json"), JSON.stringify({ audioSeconds: 60 }), "utf8");
+      await writeFile(
+        path.join(sessionDir, "transcript.json"),
+        JSON.stringify({
+          version: 1,
+          lines: [
+            { index: 0, startMs: 0, endMs: 20_000, text: "Raft elects a leader", failed: false },
+            { index: 2, startMs: 40_000, endMs: 60_000, text: "The term number rises", failed: false },
+          ],
+          flags: [{ atMs: 40_000, chunkIndex: 2 }],
+        }),
+        "utf8",
+      );
+
+      const body = await (await fetch(`${base}/api/sessions/2026-08-18-17-03-30`)).json();
+      expect(body.structured).toBe(true);
+      expect(body.lines.map((l: { index: number }) => l.index)).toEqual([0, 2]);
+      expect(body.flags).toEqual([{ atMs: 40_000, chunkIndex: 2 }]);
+      expect(body.hasAudio).toBe(false);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("falls back to parsing transcript.md for a legacy session with no transcript.json", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await seed(dir, "2026-08-18-17-03-30", {
+        "transcript.md": "[00:00] First line\n\n[00:20] Second line\n",
+      });
+
+      const body = await (await fetch(`${base}/api/sessions/2026-08-18-17-03-30`)).json();
+      expect(body.structured).toBe(false);
+      expect(body.lines).toEqual([
+        { index: 0, startMs: 0, endMs: 20_000, text: "First line", failed: false },
+        { index: 1, startMs: 20_000, endMs: 40_000, text: "Second line", failed: false },
+      ]);
+      expect(body.flags).toEqual([]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("reports hasAudio true when the audio directory has a chunk WAV, excluding full.wav", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      const sessionDir = path.join(dir, "2026-08-18-17-03-30");
+      await mkdir(path.join(sessionDir, "audio"), { recursive: true });
+      await writeFile(path.join(sessionDir, "transcript.md"), "[00:00] hello\n", "utf8");
+      await writeFile(path.join(sessionDir, "audio", "full.wav"), "fake", "utf8");
+
+      let body = await (await fetch(`${base}/api/sessions/2026-08-18-17-03-30`)).json();
+      expect(body.hasAudio).toBe(false);
+
+      await writeFile(path.join(sessionDir, "audio", "0000.wav"), "fake", "utf8");
+      body = await (await fetch(`${base}/api/sessions/2026-08-18-17-03-30`)).json();
+      expect(body.hasAudio).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
 });
 
 const json = (base: string, method: string, url: string, body?: unknown) =>

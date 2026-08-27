@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Config } from "./config.js";
+import { readLines } from "./transcript-file.js";
 import {
   isSessionId,
   defaultTitle,
@@ -77,6 +78,21 @@ async function readText(file: string): Promise<string | null> {
     return raw.trim() ? raw : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * True when the session's audio directory holds at least one per-chunk WAV.
+ * `full.wav`, if present, is a concatenated export artefact rather than a
+ * chunk, so it is excluded: its presence alone should not claim the session
+ * has playable per-line audio when the chunk files were cleaned up.
+ */
+async function hasAudio(dir: string): Promise<boolean> {
+  try {
+    const items = await readdir(path.join(dir, "audio"));
+    return items.some((name) => /^\d{4}\.wav$/.test(name));
+  } catch {
+    return false;
   }
 }
 
@@ -174,7 +190,19 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
 
     const file = await readLibrary(sessionsDir);
     const title = file.entries[id]?.title?.trim() || defaultTitle(id);
-    res.json({ id, title, transcript: transcript ?? "", summaryMarkdown, runningSummary, meta });
+    const { lines, flags, structured } = await readLines(dir);
+    res.json({
+      id,
+      title,
+      transcript: transcript ?? "",
+      summaryMarkdown,
+      runningSummary,
+      meta,
+      lines,
+      flags,
+      structured,
+      hasAudio: await hasAudio(dir),
+    });
   });
 
   router.patch("/api/sessions/:id", async (req, res) => {

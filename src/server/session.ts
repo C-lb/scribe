@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Config } from "./config.js";
 import { Transcript } from "./transcript.js";
+import { writeTranscriptFile, type TranscriptFlag } from "./transcript-file.js";
 import { EventBroker } from "./events.js";
 import { filterChunkText } from "./hallucination.js";
 import type { RunningSummary } from "./claude.js";
@@ -28,6 +29,8 @@ export class Session {
   private audioSeconds = 0;
   private queue: Promise<unknown> = Promise.resolve();
   private recording = true;
+  /** Filled in Task 4. Persisted on every write so a flag survives a restart. */
+  private flags: TranscriptFlag[] = [];
 
   get isRecording(): boolean {
     return this.recording;
@@ -100,7 +103,7 @@ export class Session {
         if (raw && !text) {
           console.info(`[scribe] chunk ${index} dropped a silence artefact: ${JSON.stringify(raw)}`);
           this.silenceArtefacts += 1;
-          await this.transcript.flush();
+          await this.persist();
           this.publishStatus();
           await this.maybeSummarise();
           return;
@@ -117,7 +120,7 @@ export class Session {
         line = this.transcript.recordFailure({ index, startMs, endMs });
       }
 
-      await this.transcript.flush();
+      await this.persist();
       this.events.publish({ type: "transcript", line });
       this.publishStatus();
       await this.maybeSummarise();
@@ -125,6 +128,17 @@ export class Session {
       // Last line of defence. Recording continues regardless of what broke.
       console.error(`[scribe] chunk ${index} handling failed:`, error);
     }
+  }
+
+  /** transcript.md stays the human artefact; transcript.json is the one the app
+   *  reads back, because Markdown loses the chunk index and the millisecond. */
+  private async persist(): Promise<void> {
+    await this.transcript.flush();
+    await writeTranscriptFile(this.dir, {
+      version: 1,
+      lines: this.transcript.lines(),
+      flags: this.flags,
+    }).catch((error) => console.error("[scribe] failed to write transcript.json:", error));
   }
 
   private publishStatus(): void {
@@ -167,7 +181,7 @@ export class Session {
   async stop(): Promise<string> {
     try {
       await this.queue;
-      await this.transcript.flush();
+      await this.persist();
 
       let markdown = "";
       try {

@@ -7,6 +7,9 @@ export interface TranscriptLine {
   endMs: number;
   text: string;
   failed: boolean;
+  /** Set once a human has corrected this line's text. Task 1 only adds the
+   *  field; nothing writes it yet. */
+  edited?: boolean;
 }
 
 export function formatTimestamp(ms: number): string {
