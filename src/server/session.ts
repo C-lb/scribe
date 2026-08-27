@@ -173,16 +173,24 @@ export class Session {
 
   /** A flag is a timestamp, nothing more. Resolving it to a chunk is best
    *  effort: a flag dropped during the chunk still being recorded has no line
-   *  yet, and chunkIndex stays null until the transcript catches up -- it is
-   *  never backfilled once the chunk finally arrives, because a listener
-   *  pressing the key cares about the moment, not about which chunk file it
-   *  ends up landing in. */
+   *  yet, and chunkIndex stays null until the transcript catches up. It is
+   *  backfilled in processChunk() the moment a line covering that timestamp
+   *  is recorded, so the common case (a flag landing before its own chunk
+   *  comes back transcribed) still resolves.
+   *
+   *  The persist below is routed through the same `this.queue` chain
+   *  processChunk() serialises its own persist() calls through, rather than
+   *  fired off on its own. writeTranscriptFile() always writes to one fixed
+   *  temp path before renaming it into place, so two writers in flight at
+   *  once can clobber each other's temp file and leave transcript.json
+   *  stale against memory -- exactly one writer, strictly ordered, is what
+   *  keeps that from happening. */
   flag(atMs: number): TranscriptFlag {
     const line = this.transcript.lines().find((l) => atMs >= l.startMs && atMs < l.endMs);
     const flag: TranscriptFlag = { atMs, chunkIndex: line?.index ?? null };
     this.flags.push(flag);
     this.events.publish({ type: "flag", flag });
-    void this.persist();
+    this.queue = this.queue.then(() => this.persist());
     return flag;
   }
 

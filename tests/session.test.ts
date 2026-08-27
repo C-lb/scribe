@@ -261,6 +261,22 @@ describe("Session", () => {
     expect(markdown).not.toContain("no transcript line at this moment");
   });
 
+  it("keeps a flag dropped immediately before stop in transcript.json once stop returns", async () => {
+    // flag() and stop() both persist through the same `this.queue` chain now
+    // rather than each firing its own write, so a flag with no await between
+    // it and stop() must still land on disk rather than losing a race
+    // between two writers hitting transcript.json's one fixed temp path.
+    const session = await Session.create(await testConfig(), okDeps());
+    await session.ingestChunk(chunk(1));
+    session.flag(12_000);
+    await session.stop();
+
+    const saved = JSON.parse(
+      await readFile(path.join(session.dir, "transcript.json"), "utf8"),
+    );
+    expect(saved.flags).toEqual([{ atMs: 12_000, chunkIndex: 1 }]);
+  });
+
   it("appends a Marked in the room section to summary.md when the session has flags", async () => {
     const session = await Session.create(await testConfig(), okDeps());
     await session.ingestChunk(chunk(1));
