@@ -7,6 +7,7 @@ import { createSilenceTracker, meterPosition } from "./audio/level.js";
 import { createPlayback } from "./playback.js";
 import { createFlags, createFlagKey } from "./flags.js";
 import { createLineEdit } from "./line-edit.js";
+import { createLineActivator } from "./line-click.js";
 
 const recordButton = document.getElementById("record");
 const flagButton = document.getElementById("flag");
@@ -357,6 +358,17 @@ function updateTranscriptReason(source) {
  */
 const lineEdit = createLineEdit({
   root: transcriptEl,
+  // Opening a correction cancels the click that was about to play this line
+  // and stops anything already playing, so the audio is not talking over the
+  // reader while they type. Bumping the token makes any play() promise still
+  // in flight, which the browser rejects with an AbortError the moment the
+  // element is repointed or paused, land on the floor instead of in the
+  // status line: a correction is not a playback failure.
+  onEdit: () => {
+    playToken += 1;
+    lineActivator.cancel();
+    playback.stop();
+  },
   save: (index, text) =>
     fetch(`/api/sessions/${displayedSource.sessionId}/lines/${index}`, {
       method: "PATCH",
@@ -373,6 +385,29 @@ const lineEdit = createLineEdit({
 });
 lineEdit.attach();
 
+/** Bumped whenever a play is superseded, by an edit opening or by another
+ *  line being clicked. A rejection carrying a stale token is the browser
+ *  aborting a play we deliberately walked away from, not a failure to report. */
+let playToken = 0;
+
+function playRow(sessionForPlayback, index, continuous) {
+  playToken += 1;
+  const token = playToken;
+  playback.playLine(sessionForPlayback, { index }, { continuous }).catch((error) => {
+    if (token !== playToken) return;
+    console.error("[scribe] playback failed", error);
+    setStatus("Could not play that chunk");
+  });
+}
+
+const lineActivator = createLineActivator({
+  play: playRow,
+  // Only a session that is not recording can be corrected, so only there does
+  // a second click mean something other than "stop the audio". Live playback
+  // stays instant.
+  shouldDelay: () => !displayedSource.recording,
+});
+
 function handleLineActivate(event) {
   // A line open for correction has already lost `.line--playable` (see
   // line-edit.js), but that guard lives in a different module: checking
@@ -383,17 +418,17 @@ function handleLineActivate(event) {
   if (!row) return;
   const sessionForPlayback = displayedSource.sessionId;
   if (!sessionForPlayback) return;
-  const index = Number(row.dataset.index);
-  playback.playLine(sessionForPlayback, { index }, { continuous: event.shiftKey }).catch((error) => {
-    console.error("[scribe] playback failed", error);
-    setStatus("Could not play that chunk");
-  });
+  lineActivator.activate(sessionForPlayback, Number(row.dataset.index), event.shiftKey);
 }
 
 // One delegated listener for both the mouse and the keyboard, so a row added
 // after the listener is attached (every line that streams in live) is
 // clickable without a per-row listener to remember to add.
 transcriptEl.addEventListener("click", handleLineActivate);
+// The pending play is cancelled here as well as in lineEdit's onEdit, because
+// a double-click on a row that cannot be edited (a line with no index, a
+// second correction while one is already open) still means "not a play".
+transcriptEl.addEventListener("dblclick", () => lineActivator.cancel());
 transcriptEl.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" && event.key !== " ") return;
   if (!event.target.closest(".line--playable")) return;

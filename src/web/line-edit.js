@@ -34,7 +34,7 @@ function lineText(row) {
  * createLineEdit() without a `doc` does, and the test suite always supplies
  * one.
  */
-export function createLineEdit({ root, save, setStatus, doc = document }) {
+export function createLineEdit({ root, save, setStatus, onEdit = () => {}, doc = document }) {
   let editingRow = null;
 
   function editing() {
@@ -44,6 +44,13 @@ export function createLineEdit({ root, save, setStatus, doc = document }) {
   function startEdit(row) {
     if (editingRow) return; // one correction open at a time
     if (!row.dataset.index) return;
+
+    // Told before anything else, so the caller can call off a click that was
+    // about to start this line's audio and stop whatever is already playing.
+    // Playback and editing share the first click of a double-click, and the
+    // rejected play() that follows must not surface as an error (see
+    // line-click.js and app.js).
+    onEdit(row);
 
     const original = lineText(row);
     const index = Number(row.dataset.index);

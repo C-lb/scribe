@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { createLineEdit } from "../src/web/line-edit.js";
+import { createLineActivator } from "../src/web/line-click.js";
 
 // The project runs vitest in the "node" environment (see vitest.config.ts) and
 // carries no jsdom/happy-dom dependency, so createFlagKey's peers
@@ -272,5 +273,89 @@ describe("createLineEdit", () => {
     expect(row.classList.contains("line--playable")).toBe(false);
     root.querySelector("input").dispatchEvent(fakeEvent("keydown", { key: "Escape" }));
     expect(row.classList.contains("line--playable")).toBe(true);
+  });
+});
+
+// Important E from the whole-branch review. Both clicks of a double-click
+// reach the click handler before lineEdit.editing() is ever true, so before
+// this the first click started the chunk, the second toggled it off, and the
+// pending play() rejected with an AbortError: "Could not play that chunk" on
+// every single correction of a session that has audio.
+describe("playing and correcting the same line", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The wiring app.js does: one delegated click handler through the
+   *  activator, the dblclick opening a correction, and the correction
+   *  cancelling both the pending play and anything already playing. */
+  function wireTranscript({ recording = false } = {}) {
+    vi.useFakeTimers();
+    const root = paneWithLine();
+    const row = root.querySelector(".line");
+    row.classList.add("line--playable");
+
+    const play = vi.fn();
+    const stopPlayback = vi.fn();
+    const setStatus = vi.fn();
+
+    const activator = createLineActivator({ play, shouldDelay: () => !recording });
+    const lineEdit = createLineEdit({
+      root,
+      save: vi.fn().mockResolvedValue({ line: { index: 0, text: "makes Raft tolerant" } }),
+      setStatus,
+      onEdit: () => {
+        activator.cancel();
+        stopPlayback();
+      },
+      doc: fakeDoc(),
+    });
+    lineEdit.attach();
+
+    root.addEventListener("click", (event) => {
+      if (lineEdit.editing()) return;
+      const target = event.target.closest(".line--playable");
+      if (!target) return;
+      activator.activate(Number(target.dataset.index), event.shiftKey);
+    });
+    root.addEventListener("dblclick", () => activator.cancel());
+
+    return { root, row, play, stopPlayback, setStatus };
+  }
+
+  it("does not play anything when a line is double-clicked to correct it", () => {
+    const { root, row, play, stopPlayback, setStatus } = wireTranscript();
+
+    row.dispatchEvent(fakeEvent("click"));
+    row.dispatchEvent(fakeEvent("click"));
+    row.dispatchEvent(fakeEvent("dblclick"));
+    vi.advanceTimersByTime(1000);
+
+    expect(play).not.toHaveBeenCalled();
+    expect(setStatus).not.toHaveBeenCalled();
+    // Entering a correction also stops whatever was already playing, so the
+    // audio is not talking over the reader while they type.
+    expect(stopPlayback).toHaveBeenCalled();
+    expect(root.querySelector("input")).not.toBeNull();
+  });
+
+  it("still plays a single click, once the double-click window has passed", () => {
+    const { row, play } = wireTranscript();
+
+    row.dispatchEvent(fakeEvent("click", { shiftKey: false }));
+    expect(play).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1000);
+
+    expect(play).toHaveBeenCalledWith(0, false);
+  });
+
+  it("plays instantly while recording, where a double-click cannot mean editing", () => {
+    const { row, play } = wireTranscript({ recording: true });
+
+    row.dispatchEvent(fakeEvent("click", { shiftKey: true }));
+
+    // No timer advanced: during a lecture the whole point is hearing the line
+    // the moment you click it.
+    expect(play).toHaveBeenCalledWith(0, true);
   });
 });
