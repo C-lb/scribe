@@ -1,10 +1,11 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Config } from "./config.js";
 import { Transcript } from "./transcript.js";
 import { writeTranscriptFile, type TranscriptFlag } from "./transcript-file.js";
 import { EventBroker } from "./events.js";
 import { filterChunkText } from "./hallucination.js";
+import { joinWavs } from "./wav-join.js";
 import type { RunningSummary } from "./claude.js";
 
 /** Groq whisper-large-v3-turbo list price, USD per hour of audio. */
@@ -211,6 +212,22 @@ export class Session {
         ),
         "utf8",
       );
+
+      // One file the whole lecture scrubs through. The chunk files stay: they
+      // are what a single line plays, and joining them again is cheap.
+      if (this.config.keepAudio) {
+        try {
+          const names = (await readdir(path.join(this.dir, "audio")))
+            .filter((n) => n.endsWith(".wav") && n !== "full.wav")
+            .sort();
+          const buffers = await Promise.all(
+            names.map((n) => readFile(path.join(this.dir, "audio", n))),
+          );
+          await writeFile(path.join(this.dir, "audio", "full.wav"), joinWavs(buffers));
+        } catch (error) {
+          console.error("[scribe] could not write full.wav:", error);
+        }
+      }
 
       return markdown;
     } finally {

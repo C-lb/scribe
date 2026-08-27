@@ -4,9 +4,12 @@ import { createExportControls } from "./summary-export.js";
 import { createHistory } from "./history.js";
 import { createBanner } from "./banner.js";
 import { createSilenceTracker, meterPosition } from "./audio/level.js";
+import { createPlayback } from "./playback.js";
 
 const recordButton = document.getElementById("record");
 const transcriptEl = document.getElementById("transcript");
+const transcriptReasonEl = document.getElementById("transcript-reason");
+const playerEl = document.getElementById("player");
 const summaryEl = document.getElementById("summary");
 const statusEl = document.getElementById("status");
 const timerEl = document.getElementById("timer");
@@ -154,6 +157,10 @@ const liveSource = {
   lines: [],
   summary: null, // { kind: "running", summary } | { kind: "markdown", markdown }
   title: null,
+  // Fixed for the life of a recording: set from the session-create response,
+  // which reflects SCRIBE_KEEP_AUDIO at the moment the session started, not
+  // whatever chunk files happen to exist on disk yet.
+  hasAudio: false,
   get sessionId() {
     return sessionId;
   },
@@ -167,6 +174,63 @@ const liveSource = {
 
 /** Whatever the panes are showing. Never read module state to decide this. */
 let displayedSource = liveSource;
+
+/**
+ * One <audio> element for the whole page, whichever session is on screen.
+ * Switching views stops whatever was playing: audio bound to a session that
+ * just scrolled out from under the transcript pane has nothing left to be
+ * feedback for.
+ */
+const playback = createPlayback({
+  audioEl: playerEl,
+  onState: ({ playingIndex }) => {
+    for (const row of transcriptEl.querySelectorAll(".line")) {
+      row.classList.toggle("line--playing", row.dataset.index === String(playingIndex));
+    }
+  },
+});
+
+/** Whether the line just appended (or about to be) should be clickable. Set
+ *  once per render() rather than re-read from displayedSource on every line,
+ *  since a chunk arriving mid-recording never changes whether the session as
+ *  a whole has audio. */
+let playbackEnabled = false;
+
+function updateTranscriptReason(source) {
+  playbackEnabled = Boolean(source.hasAudio);
+  // Before anything has happened at all (page load, nothing started) there is
+  // nothing to explain, the same rule summary-export.js follows for its own
+  // reason line: inventing a failure that never occurred is worse than
+  // silence.
+  const showReason = source.started && !playbackEnabled;
+  transcriptReasonEl.textContent = showReason
+    ? "This session was recorded with SCRIBE_KEEP_AUDIO off, so there is no audio to play."
+    : "";
+  transcriptReasonEl.hidden = !showReason;
+}
+
+function handleLineActivate(event) {
+  const row = event.target.closest(".line--playable");
+  if (!row) return;
+  const sessionForPlayback = displayedSource.sessionId;
+  if (!sessionForPlayback) return;
+  const index = Number(row.dataset.index);
+  playback.playLine(sessionForPlayback, { index }, { continuous: event.shiftKey }).catch((error) => {
+    console.error("[scribe] playback failed", error);
+    setStatus("Could not play that chunk");
+  });
+}
+
+// One delegated listener for both the mouse and the keyboard, so a row added
+// after the listener is attached (every line that streams in live) is
+// clickable without a per-row listener to remember to add.
+transcriptEl.addEventListener("click", handleLineActivate);
+transcriptEl.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  if (!event.target.closest(".line--playable")) return;
+  event.preventDefault();
+  handleLineActivate(event);
+});
 
 const exportControls = createExportControls({
   root: document.getElementById("summary-actions"),
@@ -210,6 +274,12 @@ jumpButton.addEventListener("click", () => {
 function appendLine(line) {
   const el = document.createElement("p");
   el.className = line.failed ? "line line--failed" : "line";
+  el.dataset.index = String(line.index);
+  if (playbackEnabled) {
+    el.classList.add("line--playable");
+    el.setAttribute("role", "button");
+    el.tabIndex = 0;
+  }
   const stamp = document.createElement("span");
   stamp.className = "line__time";
   stamp.textContent = formatElapsed(line.startMs);
@@ -291,6 +361,11 @@ function render(mode, source) {
   viewMode = mode;
   displayedSource = source;
 
+  // Whatever was playing belonged to the view being left, not this one.
+  playback.stop();
+  playback.setLines(source.lines);
+  updateTranscriptReason(source);
+
   // A past session opens at its beginning and has nothing to jump to; the live
   // view snaps back to the newest line.
   pinnedToLive = mode === "live";
@@ -309,26 +384,6 @@ function setStatus(text) {
   statusEl.textContent = text;
 }
 
-/** The inverse of Transcript.toMarkdown(): "[MM:SS] text", blank-line separated. */
-function parseTranscript(markdown) {
-  const lines = [];
-  for (const block of String(markdown ?? "").split("\n")) {
-    // Minutes are padded to two digits but not capped at two: a two-hour
-    // lecture writes [120:00], and a fixed \d{2} would drop the whole tail.
-    const match = /^\[(\d{2,}):(\d{2})\]\s(.*)$/.exec(block);
-    if (!match) continue;
-    const startMs = (Number(match[1]) * 60 + Number(match[2])) * 1000;
-    lines.push({
-      index: lines.length,
-      startMs,
-      endMs: startMs,
-      text: match[3],
-      failed: match[3].startsWith("[inaudible"),
-    });
-  }
-  return lines;
-}
-
 // Named `drawer` rather than `history`: a module-level `history` shadows the
 // global History API, and a later edit reaching for it would get this instead.
 const drawer = createHistory({
@@ -340,7 +395,10 @@ const drawer = createHistory({
   canOpen: () => !recording,
   onOpen: (session) => {
     render(`session:${session.id}`, {
-      lines: parseTranscript(session.transcript),
+      // The server's own lines, not a Markdown re-parse: they carry the real
+      // chunk index, gaps and all, which is exactly what a click has to name
+      // to play the right file.
+      lines: session.lines ?? [],
       summary: session.summaryMarkdown
         ? { kind: "markdown", markdown: session.summaryMarkdown }
         : session.runningSummary
@@ -348,6 +406,7 @@ const drawer = createHistory({
           : null,
       title: session.title,
       sessionId: session.id,
+      hasAudio: session.hasAudio,
       // A session on disk always ran, so "no summary" here is a failure worth
       // naming rather than the silence of a page that has done nothing yet.
       recording: false,
@@ -397,6 +456,11 @@ async function start() {
   const session = await created.json();
   sessionId = session.id;
   liveSource.title = session.title;
+  liveSource.hasAudio = Boolean(session.hasAudio);
+  // hasAudio was unknown (and defaulted to false) when render() ran above,
+  // before the session existed to ask about. Now it does, so the reason line
+  // and every line appended from here on reflect the real answer.
+  updateTranscriptReason(liveSource);
 
   events = new EventSource(`/api/sessions/${sessionId}/events`);
   // This handler sits next to the capture path: a malformed or unexpected

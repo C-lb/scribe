@@ -301,6 +301,25 @@ body{
   font-style:italic;
 }
 
+/* A playable line is a button wearing a paragraph's clothes: pointer cursor,
+   a hover step so the row reads as pressable before the reason line even
+   loads, and the same focus ring every other control in this file uses. No
+   side accent: the accent is reserved for the row that is actually playing,
+   below. */
+.line--playable{
+  cursor:pointer;
+  border-radius:var(--r-sm);
+  margin-inline:calc(var(--s2) * -1);
+  padding-inline:var(--s2);
+}
+.line--playable:hover{ background:var(--surface-2); }
+.line--playable:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+/* The one row currently playing. Only the timestamp takes the accent, so the
+   transcript text itself never changes colour and stays exactly as readable
+   as every other line. */
+.line--playing .line__time{ color:var(--accent); }
+
 /* ── Jump to live ─────────────────────────────────────────────────────────────
    Appears only when the reader has scrolled away from the bottom. It floats
    above the transcript, so it takes one surface step up plus the deeper shadow

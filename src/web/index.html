@@ -81,6 +81,8 @@
     <main class="panes">
       <section class="pane" aria-labelledby="transcript-heading">
         <h2 id="transcript-heading">Transcript</h2>
+        <audio id="player" preload="none"></audio>
+        <p id="transcript-reason" class="actions__reason" aria-live="polite" hidden></p>
         <div id="transcript" class="transcript" role="log" aria-live="polite"></div>
         <button id="jump" class="jump" type="button" hidden>Jump to live</button>
       </section>

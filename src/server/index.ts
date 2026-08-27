@@ -7,6 +7,7 @@ import { Session, type SessionDeps } from "./session.js";
 import { createGroqClient } from "./groq.js";
 import { createSummariser } from "./claude.js";
 import { createLibraryRouter } from "./library-routes.js";
+import { createAudioRouter } from "./audio-routes.js";
 import { snapshotLibrary, defaultTitle } from "./library.js";
 
 // __dirname does not exist in ES modules.
@@ -24,7 +25,9 @@ export function createApp(config: Config, deps: SessionDeps): express.Express {
       // The title goes back with the id so the browser never has to invent a
       // name for the recording it just started: the export filename mid-record
       // then matches the one the drawer gives the same session afterwards.
-      res.json({ id: session.id, title: defaultTitle(session.id) });
+      // hasAudio reflects config.keepAudio rather than a disk check: no chunk
+      // has been written yet, but whether one ever will is already decided.
+      res.json({ id: session.id, title: defaultTitle(session.id), hasAudio: config.keepAudio });
     } catch (error) {
       console.error("[scribe] failed to create session:", error);
       res.status(500).json({ error: "internal error" });
@@ -101,6 +104,7 @@ export function createApp(config: Config, deps: SessionDeps): express.Express {
   };
 
   app.use(createLibraryRouter({ config, liveSessionId }));
+  app.use(createAudioRouter({ config }));
 
   app.use(express.static(webRoot));
   return app;
