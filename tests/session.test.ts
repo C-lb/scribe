@@ -216,6 +216,51 @@ describe("Session", () => {
     expect(flag.chunkIndex).toBeNull();
   });
 
+  it("backfills chunkIndex once the chunk covering an earlier flag's timestamp is transcribed", async () => {
+    // The common case: a flag marks "right now", and the chunk covering that
+    // moment is still being recorded, so it has no line to resolve against
+    // yet. Flag first, transcribe after.
+    const session = await Session.create(await testConfig(), okDeps());
+    const flag = session.flag(12_000);
+    expect(flag.chunkIndex).toBeNull();
+
+    await session.ingestChunk(chunk(1));
+
+    // flag() persists fire-and-forget, but processChunk's own persist() is
+    // awaited inside ingestChunk, so no extra tick is needed here.
+    const saved = JSON.parse(
+      await readFile(path.join(session.dir, "transcript.json"), "utf8"),
+    );
+    expect(saved.flags).toEqual([{ atMs: 12_000, chunkIndex: 1 }]);
+  });
+
+  it("does not backfill a flag whose timestamp falls outside the chunk that just landed", async () => {
+    const session = await Session.create(await testConfig(), okDeps());
+    const flag = session.flag(25_000);
+    await session.ingestChunk(chunk(1)); // covers 0-20,000ms only
+    const saved = JSON.parse(
+      await readFile(path.join(session.dir, "transcript.json"), "utf8"),
+    );
+    expect(saved.flags).toEqual([{ atMs: 25_000, chunkIndex: null }]);
+    expect(flag.chunkIndex).toBeNull();
+  });
+
+  it("quotes the real transcript line rather than the placeholder once a flag backfills", async () => {
+    const session = await Session.create(await testConfig(), {
+      ...okDeps(),
+      transcribe: vi.fn().mockResolvedValue("what the lecturer actually said"),
+    });
+
+    session.flag(12_000);
+    await session.ingestChunk(chunk(1));
+    await session.stop();
+
+    const markdown = await readFile(path.join(session.dir, "summary.md"), "utf8");
+    expect(markdown).toContain("## Marked in the room");
+    expect(markdown).toContain("what the lecturer actually said");
+    expect(markdown).not.toContain("no transcript line at this moment");
+  });
+
   it("appends a Marked in the room section to summary.md when the session has flags", async () => {
     const session = await Session.create(await testConfig(), okDeps());
     await session.ingestChunk(chunk(1));

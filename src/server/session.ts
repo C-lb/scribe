@@ -135,6 +135,21 @@ export class Session {
         line = this.transcript.recordFailure({ index, startMs, endMs });
       }
 
+      // A flag pressed while this chunk was still recording had no line to
+      // resolve against yet -- that's the common case, since a flag marks
+      // "right now" and a chunk takes ~20s to come back transcribed. Now
+      // that the line exists, any flag still sitting on `null` whose
+      // timestamp falls inside it gets backfilled, before persist() writes
+      // it out. Without this the flag would keep `chunkIndex: null` forever,
+      // and the final document's "Marked in the room" section would quote
+      // the placeholder instead of what the lecturer actually said -- the
+      // common case, not the exception.
+      for (const flag of this.flags) {
+        if (flag.chunkIndex === null && flag.atMs >= line.startMs && flag.atMs < line.endMs) {
+          flag.chunkIndex = line.index;
+        }
+      }
+
       await this.persist();
       this.events.publish({ type: "transcript", line });
       this.publishStatus();

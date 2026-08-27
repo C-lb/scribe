@@ -5,7 +5,7 @@ import { createHistory } from "./history.js";
 import { createBanner } from "./banner.js";
 import { createSilenceTracker, meterPosition } from "./audio/level.js";
 import { createPlayback } from "./playback.js";
-import { createFlags } from "./flags.js";
+import { createFlags, createFlagKey } from "./flags.js";
 
 const recordButton = document.getElementById("record");
 const flagButton = document.getElementById("flag");
@@ -982,19 +982,7 @@ flagButton.addEventListener("click", () => {
 });
 
 // The `f` key is the whole point of this feature: no typing, no modal, one
-// key a listener can hit mid-sentence. It must stay out of the way the
-// instant focus is anywhere text could be entered, or typing a session name
-// in the drawer would silently drop flags into the recording. Modifier keys
-// are left alone too, so Cmd/Ctrl+F for the browser's own find still works.
-document.addEventListener("keydown", (event) => {
-  if (event.key.toLowerCase() !== "f") return;
-  if (event.metaKey || event.ctrlKey || event.altKey) return;
-  if (!recording) return;
-
-  const target = event.target;
-  const tag = target?.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
-
-  event.preventDefault();
-  flags.mark();
-});
+// key a listener can hit mid-sentence. createFlagKey() owns the guard logic
+// (recording state, modifier keys, focus inside a form control) so it can be
+// unit tested on its own -- see tests/flags.test.js.
+document.addEventListener("keydown", createFlagKey({ flags, isRecording: () => recording }));
