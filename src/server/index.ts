@@ -3,7 +3,7 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, type Config } from "./config.js";
-import { Session, type SessionDeps } from "./session.js";
+import { Session, restoreLiveSessions, type SessionDeps } from "./session.js";
 import { createGroqClient } from "./groq.js";
 import { createSummariser } from "./claude.js";
 import { createLibraryRouter } from "./library-routes.js";
@@ -14,9 +14,16 @@ import { snapshotLibrary, defaultTitle, readLibrary, writeLibrary, setEntry } fr
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.resolve(here, "..", "web");
 
-export function createApp(config: Config, deps: SessionDeps): express.Express {
+export function createApp(
+  config: Config,
+  deps: SessionDeps,
+  restoredSessions: Session[] = [],
+): express.Express {
   const app = express();
-  const sessions = new Map<string, Session>();
+  // Seeded with whatever restoreLiveSessions() found at boot, before the
+  // first request is ever served, so a chunk the browser sends right after a
+  // restart finds its session here instead of a 404.
+  const sessions = new Map<string, Session>(restoredSessions.map((s) => [s.id, s]));
 
   app.post("/api/sessions", express.json(), async (req, res) => {
     try {
@@ -37,7 +44,7 @@ export function createApp(config: Config, deps: SessionDeps): express.Express {
         terms = category.terms ?? [];
       }
 
-      const session = await Session.create(config, deps, terms);
+      const session = await Session.create(config, deps, terms, categoryId ?? null);
       sessions.set(session.id, session);
 
       if (categoryId) {
@@ -199,12 +206,23 @@ if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1])))
       );
     }
 
+    // Runs before listen() so nothing can hit /api/sessions/:id/chunk before
+    // the Map is seeded. A restart mid-lecture would otherwise 404 every
+    // chunk the browser's queue sends until the recording is stopped by hand.
+    const restoredSessions = await restoreLiveSessions(config, deps);
+    if (restoredSessions.length > 0) {
+      console.log(
+        `[scribe] restored ${restoredSessions.length} recording(s) still marked live: ` +
+          restoredSessions.map((s) => s.id).join(", "),
+      );
+    }
+
     // Loopback only, deliberately. This server has no authentication, reads and
     // writes a directory of the user's lecture recordings, and has one route
     // that asks the OS to open a folder. Express's default binds every
     // interface, which on a café network hands all of that to whoever else is
     // on the wifi. Nothing here is meant to leave the machine.
-    createApp(config, deps).listen(config.port, "127.0.0.1", () => {
+    createApp(config, deps, restoredSessions).listen(config.port, "127.0.0.1", () => {
       console.log(`[scribe] listening on http://localhost:${config.port}`);
     });
   })();

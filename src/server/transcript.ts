@@ -58,6 +58,14 @@ export class Transcript {
     return [...this.byIndex.values()].sort((a, b) => a.index - b.index);
   }
 
+  /** Rebuilds the in-memory index from lines read off disk. Used only by
+   *  Session.restore(), so a restored session's tail() bias prompt and
+   *  lastIndex() summary gate reflect everything transcribed before the
+   *  restart, not just what arrives after it. */
+  load(lines: TranscriptLine[]): void {
+    this.byIndex = new Map(lines.map((l) => [l.index, l]));
+  }
+
   lastIndex(): number {
     return this.byIndex.size === 0 ? 0 : Math.max(...this.byIndex.keys());
   }

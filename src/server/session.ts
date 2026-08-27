@@ -1,8 +1,9 @@
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import path from "node:path";
 import type { Config } from "./config.js";
 import { Transcript } from "./transcript.js";
-import { writeTranscriptFile, type TranscriptFlag } from "./transcript-file.js";
+import { writeTranscriptFile, readLines, type TranscriptFlag } from "./transcript-file.js";
 import { EventBroker } from "./events.js";
 import { filterChunkText } from "./hallucination.js";
 import { promptPrefix, correct } from "./glossary.js";
@@ -18,6 +19,20 @@ export interface SessionDeps {
   running(transcript: string, previous: RunningSummary | null): Promise<RunningSummary>;
   final(transcript: string): Promise<string>;
   now?: () => number;
+}
+
+/** session.json's on-disk shape. Written on every persist() so a crash
+ *  mid-lecture leaves a snapshot restoreLiveSessions() can pick back up. */
+export interface SessionStateV1 {
+  version: 1;
+  id: string;
+  recording: boolean;
+  audioSeconds: number;
+  failedChunks: number;
+  silenceArtefacts: number;
+  lastSummarisedIndex: number;
+  categoryId: string | null;
+  terms: string[];
 }
 
 export class Session {
@@ -48,6 +63,10 @@ export class Session {
      *  recording -- the same "fixed once recording starts" rule the course
      *  picker in the header enforces on the browser side. */
     private readonly terms: string[],
+    /** Filing is otherwise recorded only in library.json, keyed by session id.
+     *  Carried here too, purely so a restored session's session.json round-trips
+     *  it without a second read of the library file at restore time. */
+    private readonly categoryId: string | null = null,
   ) {
     this.transcript = new Transcript(path.join(dir, "transcript.md"));
     this.lastSummaryAt = this.now();
@@ -57,13 +76,61 @@ export class Session {
     return this.deps.now ? this.deps.now() : Date.now();
   }
 
-  static async create(config: Config, deps: SessionDeps, terms: string[] = []): Promise<Session> {
+  static async create(
+    config: Config,
+    deps: SessionDeps,
+    terms: string[] = [],
+    categoryId: string | null = null,
+  ): Promise<Session> {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const id = `${stamp.slice(0, 10)}-${stamp.slice(11, 19)}`;
     const dir = path.join(config.sessionsDir, id);
     await mkdir(dir, { recursive: true });
     if (config.keepAudio) await mkdir(path.join(dir, "audio"), { recursive: true });
-    return new Session(id, dir, config, deps, terms);
+    return new Session(id, dir, config, deps, terms, categoryId);
+  }
+
+  /**
+   * Reads session.json and returns null unless it says the recording was
+   * still live, so a session that stopped cleanly (recording: false) or a
+   * directory that was never a session (no session.json at all) is left
+   * alone. The transcript and flags are reloaded from transcript.json via
+   * readLines(), the same reader the export routes use, rather than trusted
+   * to session.json -- session.json only tracks counters, not the lines
+   * themselves.
+   */
+  static async restore(dir: string, config: Config, deps: SessionDeps): Promise<Session | null> {
+    let raw: string;
+    try {
+      raw = await readFile(path.join(dir, "session.json"), "utf8");
+    } catch {
+      return null;
+    }
+
+    let state: SessionStateV1;
+    try {
+      state = JSON.parse(raw) as SessionStateV1;
+    } catch (error) {
+      console.error(`[scribe] corrupt session.json in ${dir}, skipping restore:`, error);
+      return null;
+    }
+
+    if (!state.recording) return null;
+
+    const session = new Session(state.id, dir, config, deps, state.terms, state.categoryId);
+    session.audioSeconds = state.audioSeconds;
+    session.failedChunks = state.failedChunks;
+    session.silenceArtefacts = state.silenceArtefacts;
+    session.lastSummarisedIndex = state.lastSummarisedIndex;
+    // A restart must not immediately fire a summary of the whole lecture so
+    // far -- the clock starts now, exactly as it does for a brand new session.
+    session.lastSummaryAt = session.now();
+
+    const { lines, flags } = await readLines(dir);
+    session.transcript.load(lines);
+    session.flags = flags;
+
+    return session;
   }
 
   /**
@@ -161,7 +228,11 @@ export class Session {
   }
 
   /** transcript.md stays the human artefact; transcript.json is the one the app
-   *  reads back, because Markdown loses the chunk index and the millisecond. */
+   *  reads back, because Markdown loses the chunk index and the millisecond.
+   *  session.json is the third write here, on the same schedule, because it is
+   *  what restoreLiveSessions() needs to bring this recording back after a
+   *  restart -- a session.json that lagged behind the other two could tell a
+   *  restart to skip a session that was, in fact, still recording. */
   private async persist(): Promise<void> {
     await this.transcript.flush();
     await writeTranscriptFile(this.dir, {
@@ -169,6 +240,29 @@ export class Session {
       lines: this.transcript.lines(),
       flags: this.flags,
     }).catch((error) => console.error("[scribe] failed to write transcript.json:", error));
+    await this.writeState().catch((error) => console.error("[scribe] failed to write session.json:", error));
+  }
+
+  /** Same temp-file-then-rename discipline as writeTranscriptFile(): a crash
+   *  mid-write leaves either the previous session.json or the new one, never
+   *  a half-written file for restoreLiveSessions() to choke on. Named fields
+   *  only -- never a spread of `this.config`, which carries both API keys. */
+  private async writeState(): Promise<void> {
+    const state: SessionStateV1 = {
+      version: 1,
+      id: this.id,
+      recording: this.recording,
+      audioSeconds: this.audioSeconds,
+      failedChunks: this.failedChunks,
+      silenceArtefacts: this.silenceArtefacts,
+      lastSummarisedIndex: this.lastSummarisedIndex,
+      categoryId: this.categoryId,
+      terms: this.terms,
+    };
+    const target = path.join(this.dir, "session.json");
+    const tmp = `${target}.tmp`;
+    await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    await rename(tmp, target);
   }
 
   /** A flag is a timestamp, nothing more. Resolving it to a chunk is best
@@ -292,6 +386,51 @@ export class Session {
       // leave the drawer showing it as "Recording" for the life of the
       // process, and a live row cannot be opened for reading.
       this.recording = false;
+      // The persist() above ran while `recording` was still true, so
+      // session.json on disk still says so. Write it again now that the flag
+      // has flipped -- otherwise a restart right after a clean stop would read
+      // recording: true and restore a session that has already finished.
+      await this.writeState().catch((error) =>
+        console.error("[scribe] failed to write final session.json:", error),
+      );
     }
   }
+}
+
+/**
+ * Scans sessionsDir for a session.json that still says recording: true and
+ * rebuilds each one, newest first. Called from the boot block in index.ts
+ * before listen(), so it seeds the same Map the routes read and a chunk
+ * arriving right after the restart finds its session instead of a 404.
+ *
+ * Directory names are the ISO-ish timestamp stamp Session.create() mints
+ * them from, so a plain reverse string sort is already newest-first --
+ * no need to stat anything.
+ */
+export async function restoreLiveSessions(config: Config, deps: SessionDeps): Promise<Session[]> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(config.sessionsDir, { withFileTypes: true });
+  } catch (error) {
+    console.error("[scribe] could not scan sessions dir for restore:", error);
+    return [];
+  }
+
+  const dirNames = entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => entry.name)
+    .sort()
+    .reverse();
+
+  const restored: Session[] = [];
+  for (const name of dirNames) {
+    const dir = path.join(config.sessionsDir, name);
+    try {
+      const session = await Session.restore(dir, config, deps);
+      if (session) restored.push(session);
+    } catch (error) {
+      console.error(`[scribe] failed to restore session at ${dir}:`, error);
+    }
+  }
+  return restored;
 }
