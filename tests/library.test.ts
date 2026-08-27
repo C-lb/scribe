@@ -265,8 +265,8 @@ import {
   type LibraryFile,
 } from "../src/server/library.js";
 
-const base = () => ({
-  version: 1 as const,
+const base = (): LibraryFile => ({
+  version: 1,
   categories: [{ id: "cat_a", name: "BUSI 520", order: 0 }],
   entries: { "2026-08-18-17-03-30": { title: "Raft", categoryId: "cat_a", order: 0 } },
 });
@@ -339,6 +339,61 @@ describe("categories", () => {
     const two = createCategory(base(), "BUSI 530", "cat_b");
     const file = updateCategory(two, "cat_b", { order: 0 });
     expect(file.categories.find((c) => c.id === "cat_b")!.order).toBe(0);
+  });
+
+  describe("terms", () => {
+    it("trims each term and drops empty entries", () => {
+      const file = updateCategory(base(), "cat_a", {
+        terms: ["  Raft  ", "", "   ", "Paxos"],
+      });
+      expect(file.categories[0].terms).toEqual(["Raft", "Paxos"]);
+    });
+
+    it("caps a term at 60 characters", () => {
+      const long = "x".repeat(90);
+      const file = updateCategory(base(), "cat_a", { terms: [long] });
+      expect(file.categories[0].terms).toEqual(["x".repeat(60)]);
+    });
+
+    it("caps the list at 100 terms, counting only entries that survive trimming", () => {
+      // 150 blank lines plus 105 real terms: the blanks must not count
+      // against the cap, since they carry no vocabulary of their own.
+      const blanks = Array(150).fill("   ");
+      const real = Array.from({ length: 105 }, (_, i) => `term${i}`);
+      const file = updateCategory(base(), "cat_a", { terms: [...blanks, ...real] });
+      expect(file.categories[0].terms).toHaveLength(100);
+      expect(file.categories[0].terms).toEqual(real.slice(0, 100));
+    });
+
+    it("replaces the whole list rather than merging with what was there", () => {
+      const withTerms = updateCategory(base(), "cat_a", { terms: ["Raft"] });
+      const replaced = updateCategory(withTerms, "cat_a", { terms: ["Paxos"] });
+      expect(replaced.categories[0].terms).toEqual(["Paxos"]);
+    });
+
+    it("clearing the list to empty is allowed and clears it", () => {
+      const withTerms = updateCategory(base(), "cat_a", { terms: ["Raft"] });
+      const cleared = updateCategory(withTerms, "cat_a", { terms: [] });
+      expect(cleared.categories[0].terms).toEqual([]);
+    });
+
+    it("throws a named Error when terms is not an array, so mutate() reports it as a 400", () => {
+      expect(() => updateCategory(base(), "cat_a", { terms: "Raft" })).toThrow(
+        /terms must be an array/,
+      );
+    });
+
+    it("throws a named Error when an entry is not a string", () => {
+      expect(() => updateCategory(base(), "cat_a", { terms: ["Raft", 12] })).toThrow(
+        /each term must be a string/,
+      );
+    });
+
+    it("does not mutate the input file", () => {
+      const input = base();
+      updateCategory(input, "cat_a", { terms: ["Raft"] });
+      expect(input.categories[0].terms).toBeUndefined();
+    });
   });
 
   it("deleting one leaves its sessions alone but unfiled", () => {

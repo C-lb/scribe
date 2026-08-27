@@ -50,6 +50,52 @@ describe("correct", () => {
     expect(correct("that plan is a bit daft", ["Raft"])).toBe("that plan is a bit daft");
   });
 
+  // The first-letter gate alone was not enough: "rapt" and "Raft" share a
+  // first letter and are one substitution apart, and so are "none" and
+  // "Node". Both are ordinary English words a lecturer might say, and both
+  // are the same length as the term they would otherwise get renamed to.
+  // These pin the length gate that fixes it: only an insertion or deletion
+  // (length differs by exactly one) qualifies for the fuzzy tier now, never
+  // a same-length substitution.
+  it("does not let 'rapt' fuzzy-match 'Raft', a same-length substitution that shares a first letter", () => {
+    expect(correct("she was rapt with attention", ["Raft"])).toBe(
+      "she was rapt with attention",
+    );
+  });
+
+  it("does not let 'none' fuzzy-match 'Node', a same-length substitution that shares a first letter", () => {
+    expect(correct("there were none available in the course repo", ["Node"])).toBe(
+      "there were none available in the course repo",
+    );
+  });
+
+  it("still restores a term Whisper clipped a letter from, the deletion the fuzzy tier exists for", () => {
+    // Same case as above, restated here so the length-gate fix above cannot
+    // silently regress the one thing this feature exists to catch: "RAF" is
+    // one character SHORTER than "Raft" (a deletion), not a same-length
+    // substitution, so the length gate lets it through.
+    expect(correct("makes RAF tolerant of partitions", ["Raft"])).toBe(
+      "makes Raft tolerant of partitions",
+    );
+  });
+
+  // Deliberate gap, not a bug: catching either of these needs a dictionary
+  // this codebase does not have (no new dependency allowed), and the whole
+  // premise of the fuzzy tier is that a false correction is worse than a
+  // missed one.
+  it("intentionally leaves a first-letter mismatch and a same-length substitution uncorrected", () => {
+    // First letter misheard: "lode" (a real word, a vein of ore) is one
+    // substitution from "Node" (l <-> n) and the same length, so neither the
+    // first-letter gate nor the length gate would let this through even if
+    // only one of them existed.
+    expect(correct("a lode of copper ore", ["Node"])).toBe("a lode of copper ore");
+    // Restated from above: a same-length substitution that does share a
+    // first letter is exactly the shape the length gate exists to block.
+    expect(correct("she was rapt with attention", ["Raft"])).toBe(
+      "she was rapt with attention",
+    );
+  });
+
   it("preserves punctuation and spacing exactly around a corrected token", () => {
     expect(correct("Is this raft, or something else?", ["Raft"])).toBe(
       "Is this Raft, or something else?",

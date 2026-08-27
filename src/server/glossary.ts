@@ -60,21 +60,34 @@ const WORD = /[\p{L}\p{N}]+(?:'[\p{L}\p{N}]+)*/gu;
  * 1. Exact, case-insensitive: a token whose lowercase form equals a term's
  *    lowercase form is replaced with the term's own spelling. Fixes "raft"
  *    to "Raft".
- * 2. Distance one, gated three ways: only for terms of four characters or
+ * 2. Distance one, gated FOUR ways: only for terms of four characters or
  *    more (so a three-letter term like "cap" can never fuzzy-claim "cat"),
  *    only when the token was not already an exact match for some term (tier
- *    1 already returned in that case), and only when the token's first
- *    letter matches the term's first letter.
+ *    1 already returned in that case), only when the token's first letter
+ *    matches the term's first letter, and only when the token and the term
+ *    differ in LENGTH by exactly one.
  *
- *    That last gate is not in the brief's pinned cases, but it closes a real
- *    hole: without it, an ordinary English word one substitution away from a
- *    term gets silently renamed. "daft" is one substitution from "Raft"
- *    (d->r) and is a real word a lecturer might actually say. Whisper's own
- *    drift, by contrast, clips or garbles the *tail* of a word far more often
- *    than the head ("RAF" for "Raft" keeps the leading R), so requiring the
- *    first letter to match keeps the fix aimed at that failure mode instead
- *    of at coincidental near-misses. See tests/glossary.test.ts for the
- *    "daft" case this guards against.
+ *    Neither of the last two gates is in the brief's pinned cases, but both
+ *    close real holes. The first-letter gate alone is not enough: "rapt" and
+ *    "Raft" share a first letter and are one substitution apart (p<->f), and
+ *    so are "Node" and "none". Both are ordinary English words a lecturer
+ *    might actually say, and both are the same length as the term they would
+ *    get renamed to.
+ *
+ *    The pinned case this feature exists for, "RAF" -> "Raft", is not a
+ *    substitution: it is a DELETION, Whisper dropping a trailing letter, so
+ *    the token is one character shorter than the term. That is the failure
+ *    mode a bias prompt actually produces -- a clipped or garbled tail, not a
+ *    same-length swap of one letter for another. A same-length substitution
+ *    is overwhelmingly more likely to be a different real word than a
+ *    mishearing of the term, and this file's whole premise is that a false
+ *    correction is worse than a missed one, so the length gate restricts the
+ *    fuzzy tier to insertions and deletions (length differs by exactly one)
+ *    and leaves same-length substitutions alone even when they are distance
+ *    one. See tests/glossary.test.ts for the "rapt" and "none" cases this
+ *    guards against, and for the deliberate gap it leaves (a same-length
+ *    substitution, and a term whose first letter was misheard, both stay
+ *    uncorrected on purpose).
  */
 export function correct(text: string, terms: string[]): string {
   if (terms.length === 0) return text;
@@ -91,6 +104,7 @@ export function correct(text: string, terms: string[]): string {
       if (term.length < 4) continue;
       const termLower = term.toLowerCase();
       if (lower[0] !== termLower[0]) continue;
+      if (Math.abs(lower.length - termLower.length) !== 1) continue;
       if (levenshtein(lower, termLower) === 1) return term;
     }
     return word;

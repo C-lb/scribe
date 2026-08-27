@@ -318,6 +318,40 @@ describe("library writes", () => {
     }
   });
 
+  it("saves a category's term list and returns it in the re-rendered library", async () => {
+    const { base, server } = await serve();
+    try {
+      const created = await (await json(base, "POST", "/api/categories", { name: "BUSI 520" })).json();
+      const id = created.categories[0].id;
+
+      const saved = await (
+        await json(base, "PATCH", `/api/categories/${id}`, { terms: ["Raft", "Paxos"] })
+      ).json();
+      expect(saved.categories[0].terms).toEqual(["Raft", "Paxos"]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("400s a malformed terms payload through mutate() rather than applying it", async () => {
+    const { base, server } = await serve();
+    try {
+      const created = await (await json(base, "POST", "/api/categories", { name: "BUSI 520" })).json();
+      const id = created.categories[0].id;
+
+      const res = await json(base, "PATCH", `/api/categories/${id}`, { terms: "Raft" });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toMatch(/terms must be an array/);
+
+      // Nothing from the rejected payload made it onto the category.
+      const library = await (await json(base, "GET", "/api/library")).json();
+      expect(library.categories[0].terms).toBeUndefined();
+    } finally {
+      server.close();
+    }
+  });
+
   it("400s an unknown category rather than half-applying it", async () => {
     const { base, dir, server } = await serve();
     try {
