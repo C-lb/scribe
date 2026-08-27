@@ -1,8 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createApp } from "../src/server/index.js";
+import { Session } from "../src/server/session.js";
 import { loadConfig } from "../src/server/config.js";
 
 async function app() {
@@ -290,6 +291,132 @@ describe("HTTP API", () => {
       body: JSON.stringify({ atMs: 1000 }),
     });
     expect(res.status).toBe(404);
+    server.close();
+  });
+});
+
+// Critical B and Important G from the whole-branch review, both of which need
+// more than one session in the Map, so they build the app the way the boot
+// block does rather than through POST /api/sessions.
+describe("two sessions both marked live", () => {
+  async function appWithTwoLiveSessions() {
+    const dir = await mkdtemp(path.join(tmpdir(), "scribe-live-"));
+    const config = loadConfig({
+      GROQ_API_KEY: "gsk_test",
+      ANTHROPIC_API_KEY: "sk-ant-test",
+      SCRIBE_SESSIONS_DIR: dir,
+    } as NodeJS.ProcessEnv);
+    const deps = {
+      transcribe: vi.fn().mockResolvedValue("hello world"),
+      running: vi.fn(),
+      final: vi.fn().mockResolvedValue("# Notes"),
+    };
+
+    const stale = "2026-08-27-09-00-00";
+    const live = "2026-08-27-11-00-00";
+    const sessions = [];
+    // Newest first, which is the order restoreLiveSessions() hands back.
+    for (const id of [live, stale]) {
+      await mkdir(path.join(dir, id), { recursive: true });
+      await writeFile(
+        path.join(dir, id, "session.json"),
+        JSON.stringify({
+          version: 1,
+          id,
+          recording: true,
+          audioSeconds: 0,
+          failedChunks: 0,
+          silenceArtefacts: 0,
+          lastSummarisedIndex: 0,
+          categoryId: null,
+          terms: [],
+        }),
+        "utf8",
+      );
+      await writeFile(
+        path.join(dir, id, "transcript.json"),
+        JSON.stringify({
+          version: 1,
+          lines: [{ index: 0, startMs: 0, endMs: 20_000, text: "makes RAF tolerant", failed: false }],
+          flags: [],
+        }),
+        "utf8",
+      );
+      sessions.push((await Session.restore(path.join(dir, id), config, deps))!);
+    }
+
+    const server = createApp(config, deps, sessions).listen(0);
+    const port = (server.address() as { port: number }).port;
+    return { base: `http://127.0.0.1:${port}`, server, live, stale, dir };
+  }
+
+  it("refuses a line edit on the session that is actually recording", async () => {
+    const { base, server, live } = await appWithTwoLiveSessions();
+    const res = await fetch(`${base}/api/sessions/${live}/lines/0`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "makes Raft tolerant" }),
+    });
+    // Used to be a 200 that rewrote the live session's files, because the
+    // guard compared against liveSessionId(), which returned the OLDEST.
+    expect(res.status).toBe(409);
+    server.close();
+  });
+
+  it("reports the newest live session as the live one", async () => {
+    const { base, server, live } = await appWithTwoLiveSessions();
+    const body = await (await fetch(`${base}/api/library`)).json();
+    const rows: { id: string; live: boolean }[] = body.categories.flatMap(
+      (c: { sessions: { id: string; live: boolean }[] }) => c.sessions,
+    );
+    expect(rows.filter((r) => r.live).map((r) => r.id)).toEqual([live]);
+    server.close();
+  });
+});
+
+// Important G. Both of these routes take no body, which makes them
+// CORS-simple: any page in any tab could fire them off with mode: "no-cors"
+// and stop a lecture that was still recording.
+describe("same-origin gate on state-changing routes", () => {
+  it("refuses a cross-site stop", async () => {
+    const { base, server } = await app();
+    const { id } = await (await fetch(`${base}/api/sessions`, { method: "POST" })).json();
+    const res = await fetch(`${base}/api/sessions/${id}/stop`, {
+      method: "POST",
+      headers: { Origin: "http://evil.example", "Sec-Fetch-Site": "cross-site" },
+    });
+    expect(res.status).toBe(403);
+    server.close();
+  });
+
+  it("refuses a cross-site request that carries only an Origin", async () => {
+    const { base, server } = await app();
+    const { id } = await (await fetch(`${base}/api/sessions`, { method: "POST" })).json();
+    const res = await fetch(`${base}/api/sessions/${id}/reveal`, {
+      method: "POST",
+      headers: { Origin: "http://evil.example" },
+    });
+    expect(res.status).toBe(403);
+    server.close();
+  });
+
+  it("allows the page's own same-origin request", async () => {
+    const { base, server } = await app();
+    const { id } = await (await fetch(`${base}/api/sessions`, { method: "POST" })).json();
+    const res = await fetch(`${base}/api/sessions/${id}/stop`, {
+      method: "POST",
+      headers: { Origin: base, "Sec-Fetch-Site": "same-origin" },
+    });
+    expect(res.status).toBe(200);
+    server.close();
+  });
+
+  it("leaves a GET alone, so the page and its audio still load", async () => {
+    const { base, server } = await app();
+    const res = await fetch(`${base}/api/library`, {
+      headers: { Origin: "http://evil.example", "Sec-Fetch-Site": "cross-site" },
+    });
+    expect(res.status).toBe(200);
     server.close();
   });
 });

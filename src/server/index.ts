@@ -8,6 +8,7 @@ import { createGroqClient } from "./groq.js";
 import { createSummariser } from "./claude.js";
 import { createLibraryRouter } from "./library-routes.js";
 import { createAudioRouter } from "./audio-routes.js";
+import { sameOriginOnly } from "./same-origin.js";
 import { snapshotLibrary, defaultTitle, readLibrary, writeLibrary, setEntry } from "./library.js";
 
 // __dirname does not exist in ES modules.
@@ -20,6 +21,10 @@ export function createApp(
   restoredSessions: Session[] = [],
 ): express.Express {
   const app = express();
+  // Ahead of every route, including the two routers mounted below, so a state
+  // changing request from another site is refused before it reaches anything
+  // that can act on it.
+  app.use(sameOriginOnly());
   // Seeded with whatever restoreLiveSessions() found at boot, before the
   // first request is ever served, so a chunk the browser sends right after a
   // restart finds its session here instead of a 404.
@@ -154,15 +159,29 @@ export function createApp(
   });
 
   // Only one recording runs at a time in practice; take the most recent one
-  // still marked as recording so the list can flag the live row.
+  // still marked as recording so the drawer can flag the live row.
+  //
+  // Compared by id rather than by position in the Map: ids are the ISO-ish
+  // timestamp Session.create() mints, so the greatest string is the newest
+  // session whatever order the Map happens to be in. Iterating insertion
+  // order was wrong the moment restoreLiveSessions() seeded it newest first,
+  // and it returned the OLDEST live session instead.
   const liveSessionId = () => {
-    for (const [id, session] of [...sessions].reverse()) {
-      if (session.isRecording) return id;
+    let newest: string | null = null;
+    for (const [id, session] of sessions) {
+      if (!session.isRecording) continue;
+      if (newest === null || id > newest) newest = id;
     }
-    return null;
+    return newest;
   };
 
-  app.use(createLibraryRouter({ config, liveSessionId }));
+  // The question a guard about writing to a session's files actually means is
+  // "is THIS session recording", not "which single session is the live one".
+  // Answering it per id means a second live session (a crash remnant not yet
+  // closed) cannot make a genuinely live session look editable.
+  const isRecording = (id: string) => sessions.get(id)?.isRecording === true;
+
+  app.use(createLibraryRouter({ config, liveSessionId, isRecording }));
   app.use(createAudioRouter({ config }));
 
   app.use(express.static(webRoot));

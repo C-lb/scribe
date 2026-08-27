@@ -7,7 +7,7 @@ import type { Config } from "./config.js";
 import { readLines, writeTranscriptFile } from "./transcript-file.js";
 import { linesToMarkdown } from "./transcript.js";
 import { toSrt, toVtt, toPlainText } from "./captions.js";
-import { sanitiseFilename } from "../shared/filename.js";
+import { sanitiseFilename, CHUNK_FILE_PATTERN } from "../shared/filename.js";
 import {
   isSessionId,
   defaultTitle,
@@ -41,7 +41,14 @@ async function openInFinder(dir: string): Promise<void> {
 
 export interface LibraryRouterDeps {
   config: Config;
+  /** The newest session still recording, used to mark the live row in the
+   *  drawer. Never used to decide whether one particular session may be
+   *  written to: that is isRecording's job. */
   liveSessionId: () => string | null;
+  /** Whether THIS session id is the one currently recording. A per-id
+   *  predicate rather than an equality test against liveSessionId(), so a
+   *  second session marked live cannot leave the real one unguarded. */
+  isRecording: (id: string) => boolean;
   now?: () => string;
   reveal?: (dir: string) => Promise<void>;
 }
@@ -93,7 +100,7 @@ async function readText(file: string): Promise<string | null> {
 async function hasAudio(dir: string): Promise<boolean> {
   try {
     const items = await readdir(path.join(dir, "audio"));
-    return items.some((name) => /^\d{4}\.wav$/.test(name));
+    return items.some((name) => CHUNK_FILE_PATTERN.test(name));
   } catch {
     return false;
   }
@@ -207,9 +214,11 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
 
   router.get("/api/sessions/:id", async (req, res) => {
     const { id } = req.params;
-    if (!isSessionId(id)) return res.status(400).json({ error: "invalid session id" });
-
-    const dir = path.join(sessionsDir, id);
+    // Both gates, via resolveSessionDir: this route reads four files out of
+    // the session directory, so it gets the same treatment as every other
+    // route where a session id reaches the filesystem.
+    const dir = resolveSessionDir(sessionsDir, id);
+    if (!dir) return res.status(400).json({ error: "invalid session id" });
     const transcript = await readText(path.join(dir, "transcript.md"));
     const meta = await readJson<Record<string, unknown>>(path.join(dir, "meta.json"));
     const summaryMarkdown = await readText(path.join(dir, "summary.md"));
@@ -263,7 +272,12 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
 
   router.patch("/api/sessions/:id", async (req, res) => {
     const { id } = req.params;
-    if (!isSessionId(id)) return res.status(400).json({ error: "invalid session id" });
+    // Same two gates as the rest: the id is written into library.json and is
+    // the key every filesystem-touching route looks a directory up by, so it
+    // must clear the containment check before it is stored at all.
+    if (!resolveSessionDir(sessionsDir, id)) {
+      return res.status(400).json({ error: "invalid session id" });
+    }
 
     const patch: { title?: string | null; categoryId?: string | null; hidden?: boolean | null } = {};
     if ("title" in req.body) patch.title = req.body.title === null ? null : String(req.body.title);
@@ -366,7 +380,11 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
     // every flush, so an edit landing mid-recording would be overwritten by the
     // next chunk without ever telling the user. The same reasoning already stops
     // a past session being opened while recording.
-    if (deps.liveSessionId() === id) {
+    //
+    // Asked per id, not "is this the one live session". Those are different
+    // questions the moment two sessions are marked live, and the wrong one
+    // let an edit through to the session that was genuinely recording.
+    if (deps.isRecording(id)) {
       return res.status(409).json({ error: "Stop recording before correcting a line" });
     }
 

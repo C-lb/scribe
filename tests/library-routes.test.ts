@@ -32,7 +32,13 @@ async function serve(liveId: string | null = null) {
   } as NodeJS.ProcessEnv);
 
   const app = express();
-  app.use(createLibraryRouter({ config, liveSessionId: () => liveId }));
+  // The router now asks per id whether THAT session is recording, rather than
+  // comparing against the one live id, so the fixture answers the same way.
+  app.use(createLibraryRouter({
+    config,
+    liveSessionId: () => liveId,
+    isRecording: (id) => id === liveId,
+  }));
   const server = app.listen(0);
   const port = (server.address() as { port: number }).port;
   return { base: `http://127.0.0.1:${port}`, dir, server };
@@ -788,7 +794,12 @@ describe("POST /api/sessions/:id/reveal", () => {
     } as NodeJS.ProcessEnv);
     const reveal = vi.fn().mockResolvedValue(undefined);
     const app = express();
-    app.use(createLibraryRouter({ config, liveSessionId: () => null, reveal }));
+    app.use(createLibraryRouter({
+      config,
+      liveSessionId: () => null,
+      isRecording: () => false,
+      reveal,
+    }));
     const server = app.listen(0);
     const port = (server.address() as { port: number }).port;
     return { base: `http://127.0.0.1:${port}`, dir, server, reveal };
@@ -861,6 +872,31 @@ describe("POST /api/sessions/:id/reveal", () => {
       const res = await fetch(`${base}/api/sessions/2026-08-18-17-03-30/reveal`, { method: "POST" });
       expect(res.status).toBe(404);
       expect(reveal).not.toHaveBeenCalled();
+    } finally {
+      server.close();
+    }
+  });
+});
+
+describe("the containment gate on the session routes", () => {
+  // Every other filesystem-touching route already carries both gates. These
+  // two carried only the id-shape one, which is the gate a future loosening
+  // of SESSION_ID_PATTERN would quietly weaken.
+  it("rejects a traversing id on GET /api/sessions/:id", async () => {
+    const { base, server } = await serve();
+    try {
+      const res = await fetch(`${base}/api/sessions/..%2F..%2Fetc`);
+      expect(res.status).toBe(400);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("rejects a traversing id on PATCH /api/sessions/:id", async () => {
+    const { base, server } = await serve();
+    try {
+      const res = await json(base, "PATCH", "/api/sessions/..%2F..%2Fetc", { title: "no" });
+      expect(res.status).toBe(400);
     } finally {
       server.close();
     }
