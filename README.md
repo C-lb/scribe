@@ -24,6 +24,8 @@ Fill in both keys in `.env`:
 npm run dev
 ```
 
+The server binds `127.0.0.1` only, and it refuses any state-changing request that a browser reports as coming from another site, so a page in another tab cannot stop your recording or open Finder windows behind your back.
+
 Open `http://localhost:4747`, grant microphone access, and press "Start recording". Speak normally; the transcript fills in a line at a time and the summary pane updates every few minutes. Press "Stop recording" to end the session and write the final notes.
 
 ## Course term lists
@@ -33,13 +35,27 @@ The "Course" picker in the header binds a category's term list into the recordin
 The correction is two-tier and deliberately conservative:
 
 1. **Exact match, case-insensitive.** "raft" becomes "Raft".
-2. **One letter of difference, gated.** Only for terms of four characters or more, only for a word not already an exact match for some other term, and only when the word's first letter matches the term's. "RAF" becomes "Raft"; "daft" does not, even though it is also one substitution away, because Whisper's own drift clips or garbles the tail of a word far more often than the head.
+2. **One letter of difference, gated four ways.** The word has to clear all four: the term is four characters or more, the word is not already an exact match for some other term, the word's first letter matches the term's, and the word's length differs from the term's by exactly one. That last gate means only an inserted or deleted letter qualifies, never a substitution of the same length. "RAF" becomes "Raft", because a letter is missing; "daft" does not, because it is the same length and is far more likely to be a different real word than a mishearing, and neither does "rapt".
 
 The choice is fixed once a recording starts: switching mid-lecture would mean the bias prompt on chunk 40 was built from a different vocabulary than chunk 1, which is confusing to debug and does not obviously help. Pick the course before pressing "Start recording".
 
 **Editing a term list.** Right-click a category heading in the drawer and choose "Edit terms" to open a one-term-per-line editor. Cmd/Ctrl+Enter or clicking away saves it; Escape cancels. The list is capped at 100 terms of 60 characters each, which is generous for a course's worth of proper nouns and jargon and small enough that nobody pastes in a textbook by accident.
 
 **Known gap: no automatic seeding from a syllabus.** Populating a term list from an uploaded document with Claude was out of scope for this pass. It would need a file upload path and a way to extract text from a PDF, and neither was worth adding as a new dependency for this task. Term lists are typed in by hand for now.
+
+## Working with the transcript
+
+**Click a line to hear it.** Every line of a session recorded with `SCRIBE_KEEP_AUDIO` on plays the exact chunk it was transcribed from, so a line that reads wrong can be checked against what was actually said. Click once to play, click the same line again to stop it. Shift-click plays continuously from that line on, rolling into each following line as the chunk ends, which is how you listen to a passage rather than a sentence. The line being played is marked while it plays. Keyboard: Tab to a line and press Enter or Space, and hold Shift for the same continuous play.
+
+A session recorded with `SCRIBE_KEEP_AUDIO=false` has nothing to play, and the reason line under the transcript says so rather than leaving the lines looking clickable.
+
+**Double-click a line to correct it.** Type the correction and press Enter, or Escape to abandon it; clicking away also abandons. This is the same gesture as renaming a session in the drawer. A corrected line is saved to both `transcript.md` and `transcript.json` and shows a quieter timestamp with the title "Corrected by hand". Correcting is only possible once the recording has stopped: while a lecture is running the live transcript is rewritten in full on every chunk, so an edit would be silently overwritten, and the server refuses it with "Stop recording before correcting a line".
+
+Because playing and correcting share the first click, on a session that is not recording a click waits about a quarter of a second to see whether a second one is coming. During a recording there is nothing to wait for (no line can be corrected), so playback there is instant.
+
+**Press "f" to flag a moment.** While a lecture is recording, the "Flag" button beside the record button, and the `f` key as its shortcut, mark the moment you are in right now: the thing worth coming back to, the point the lecturer said would be on the exam. The status line confirms with "Flagged at 01:03", because a keypress with no answer is a dead key. The key is ignored while you are typing in a field or a menu, so naming a session never drops a flag by accident.
+
+A flag is a timestamp. It is attached to whichever transcript line covers that moment, which is usually a line that has not come back from Whisper yet, so it is filled in as soon as that chunk lands. Flagged lines are marked in the transcript pane, the flags are saved in `transcript.json`, and the final document gets a "Marked in the room" section listing each one with its timestamp and what was being said at the time. That section is appended after the model has written its notes rather than asked for in the prompt: the flags are ground truth from the person in the room, and a model handed them as prose might paraphrase or drop one.
 
 ## The sessions drawer
 
@@ -81,7 +97,10 @@ Each recording gets its own directory under `~/scribe/sessions/<timestamp>/` (ov
 - `transcript.md`: every transcribed line with its timestamp. It's rewritten in full on each flush rather than appended; see "Known limitations" for why.
 - `summary.md`: the final Markdown revision notes, written once when you stop recording.
 - `meta.json`: session id, total audio seconds, failed-chunk count, the two model names, and an estimated Groq cost. Never contains an API key.
-- `audio/NNNN.wav`: the raw audio for each chunk, kept so a full re-transcription is always possible. Only written if `SCRIBE_KEEP_AUDIO` is true.
+- `audio/NNNN.wav`: the raw audio for each chunk, kept so a full re-transcription is always possible, and what a click on a transcript line plays back. Only written if `SCRIBE_KEEP_AUDIO` is true. `audio/full.wav` is the whole lecture joined into one file, written when you stop recording.
+- `transcript.json`: the same lines with their real chunk index, start and end in milliseconds, whether the chunk failed, whether a human has corrected the line, and the flags. This is the file the app reads back; `transcript.md` is for you. A session recorded before this file existed still opens: the Markdown is parsed instead, though it carries no flags and numbers the lines by position.
+- `session.json`: whether this session is still recording, plus the counters needed to pick it up again after a restart. Never contains an API key.
+- `running-summary.json`: the most recent running summary, so a restart carries on accumulating rather than starting the summary over.
 
 ## Configuration
 
@@ -126,7 +145,7 @@ Scribe's own answer to this, in-app, is two-layered. A course term list (see "Co
 
 **Microphone only.** Scribe captures whatever the browser's `getUserMedia` gives it from the selected microphone. It does not capture system audio: a Zoom call, a video, another app's playback. Screen and tab audio capture is out of scope.
 
-**A restart mid-recording resumes, but the browser's own gap does not.** A `Session` keeps `session.json`, alongside `transcript.md` and `transcript.json`, up to date after every chunk, and again with `recording: false` once you stop it by hand. On boot, before the server starts listening, it scans the sessions directory for any `session.json` still marked `recording: true` and rebuilds each of those sessions from disk, newest first, so a chunk the browser sends right after the restart finds its session instead of a 404. What is still lost is whatever the browser's own upload queue dropped while the server was down: that queue is bounded, so if the server is down for longer than the queue can hold, the oldest queued chunks are gone for good, and the recording resumes with a gap rather than a stall.
+**A restart mid-recording resumes, but the browser's own gap does not.** A `Session` keeps `session.json`, alongside `transcript.md` and `transcript.json`, up to date after every chunk, and again with `recording: false` once you stop it by hand. On boot, before the server starts listening, it scans the sessions directory for any `session.json` still marked `recording: true` and rebuilds the newest one from disk, so a chunk the browser sends right after the restart finds its session instead of a 404. Scribe records one lecture at a time, so an older session still marked live is a leftover from a crash rather than a second concurrent lecture: it is written back as `recording: false` and logged, which is what stops a single crash leaving a row that reads "Recording" forever and can never be opened, hidden or corrected. What is still lost is whatever the browser's own upload queue dropped while the server was down: that queue is bounded, so if the server is down for longer than the queue can hold, the oldest queued chunks are gone for good, and the recording resumes with a gap rather than a stall.
 
 ## What still needs a human with a microphone
 
