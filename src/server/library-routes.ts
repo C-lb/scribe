@@ -1,10 +1,11 @@
 import express from "express";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Config } from "./config.js";
-import { readLines } from "./transcript-file.js";
+import { readLines, writeTranscriptFile } from "./transcript-file.js";
+import { linesToMarkdown } from "./transcript.js";
 import {
   isSessionId,
   defaultTitle,
@@ -293,6 +294,44 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
     } catch (error) {
       console.error("[scribe] reveal failed:", error);
       res.status(500).json({ error: "could not open the folder" });
+    }
+  });
+
+  router.patch("/api/sessions/:id/lines/:index", async (req, res) => {
+    const { id } = req.params;
+    if (!isSessionId(id)) return res.status(400).json({ error: "invalid session id" });
+
+    const index = Number(req.params.index);
+    if (!Number.isInteger(index) || index < 0) {
+      return res.status(400).json({ error: "invalid line index" });
+    }
+
+    // The live transcript belongs to the recorder: it is rewritten in full on
+    // every flush, so an edit landing mid-recording would be overwritten by the
+    // next chunk without ever telling the user. The same reasoning already stops
+    // a past session being opened while recording.
+    if (deps.liveSessionId() === id) {
+      return res.status(409).json({ error: "Stop recording before correcting a line" });
+    }
+
+    const text = String(req.body?.text ?? "").trim();
+    if (!text) return res.status(400).json({ error: "a correction cannot be empty" });
+
+    const dir = path.join(sessionsDir, id);
+    const { lines, flags } = await readLines(dir);
+    const existing = lines.find((l) => l.index === index);
+    if (!existing) return res.status(404).json({ error: "unknown line" });
+
+    const line = { ...existing, text, failed: false, edited: true };
+    const next = lines.map((l) => (l.index === index ? line : l));
+
+    try {
+      await writeTranscriptFile(dir, { version: 1, lines: next, flags });
+      await writeFile(path.join(dir, "transcript.md"), `${linesToMarkdown(next)}\n`, "utf8");
+      res.json({ line });
+    } catch (error) {
+      console.error("[scribe] failed to save a line edit:", error);
+      res.status(500).json({ error: "internal error" });
     }
   });
 

@@ -333,6 +333,31 @@ body{
   color:var(--warn);
 }
 
+/* A hand correction is a fix to the record, not a new fact -- so it carries
+   no colour of its own, only a quieter timestamp. The title attribute (set
+   in app.js) is what actually names it "Corrected by hand" on hover. */
+.line--edited .line__time{ opacity:.6; }
+
+/* The input a double-click drops into a line. Same field as .inline-edit
+   elsewhere, sized for the transcript's own reading type instead of the
+   sidebar's caption size, since it replaces running text rather than a
+   label. */
+.line-edit{
+  width:100%;
+  min-width:0;
+  padding:2px 4px;
+  font:inherit;
+  font-size:var(--t-lead);
+  line-height:var(--lh-lead);
+  letter-spacing:var(--tr-lead);
+  border:1px solid var(--line);
+  border-radius:var(--r-sm);
+  background:var(--surface-1);
+  color:var(--ink);
+  vertical-align:baseline;
+}
+.line-edit:focus{ outline:2px solid var(--accent); outline-offset:1px; }
+
 /* ── Jump to live ─────────────────────────────────────────────────────────────
    Appears only when the reader has scrolled away from the bottom. It floats
    above the transcript, so it takes one surface step up plus the deeper shadow

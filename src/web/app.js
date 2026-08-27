@@ -6,6 +6,7 @@ import { createBanner } from "./banner.js";
 import { createSilenceTracker, meterPosition } from "./audio/level.js";
 import { createPlayback } from "./playback.js";
 import { createFlags, createFlagKey } from "./flags.js";
+import { createLineEdit } from "./line-edit.js";
 
 const recordButton = document.getElementById("record");
 const flagButton = document.getElementById("flag");
@@ -330,14 +331,54 @@ function updateTranscriptReason(source) {
   // nothing to explain, the same rule summary-export.js follows for its own
   // reason line: inventing a failure that never occurred is worse than
   // silence.
-  const showReason = source.started && !playbackEnabled;
-  transcriptReasonEl.textContent = showReason
-    ? "This session was recorded with SCRIBE_KEEP_AUDIO off, so there is no audio to play."
-    : "";
-  transcriptReasonEl.hidden = !showReason;
+  //
+  // Recording takes priority over the audio reason: while a session is still
+  // recording, the reason a correction can't be saved (the live transcript
+  // would overwrite it on the next chunk, per the route's own 409) is the
+  // more actionable thing to tell the reader, even on a session that will
+  // turn out to have no audio either.
+  let reason = "";
+  if (source.started && source.recording) {
+    reason = "Stop recording to correct a line";
+  } else if (source.started && !playbackEnabled) {
+    reason = "This session was recorded with SCRIBE_KEEP_AUDIO off, so there is no audio to play.";
+  }
+  transcriptReasonEl.textContent = reason;
+  transcriptReasonEl.hidden = !reason;
 }
 
+/**
+ * Correcting a line, wired to whichever session is on screen (never the
+ * live-recorder module state) the same way playback already reads
+ * `displayedSource.sessionId` rather than `sessionId`: a past session opened
+ * from the drawer is editable too. The server is the one that actually
+ * enforces "not while recording" (409, see library-routes.ts); this is only
+ * where the message from that rejection ends up.
+ */
+const lineEdit = createLineEdit({
+  root: transcriptEl,
+  save: (index, text) =>
+    fetch(`/api/sessions/${displayedSource.sessionId}/lines/${index}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    }).then(async (res) => {
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? "the server rejected the correction");
+      }
+      return res.json();
+    }),
+  setStatus,
+});
+lineEdit.attach();
+
 function handleLineActivate(event) {
+  // A line open for correction has already lost `.line--playable` (see
+  // line-edit.js), but that guard lives in a different module: checking
+  // here too is one extra line against a click starting audio underneath
+  // someone who is mid-correction.
+  if (lineEdit.editing()) return;
   const row = event.target.closest(".line--playable");
   if (!row) return;
   const sessionForPlayback = displayedSource.sessionId;
@@ -401,8 +442,14 @@ jumpButton.addEventListener("click", () => {
 
 function appendLine(line) {
   const el = document.createElement("p");
-  el.className = line.failed ? "line line--failed" : "line";
+  const classes = ["line"];
+  if (line.failed) classes.push("line--failed");
+  // Only a quieter timestamp and a tooltip, per styles.css: a correction is a
+  // hand fix to the record, not a new fact that needs its own colour.
+  if (line.edited) classes.push("line--edited");
+  el.className = classes.join(" ");
   el.dataset.index = String(line.index);
+  if (line.edited) el.title = "Corrected by hand";
   if (playbackEnabled) {
     el.classList.add("line--playable");
     el.setAttribute("role", "button");
@@ -890,6 +937,10 @@ async function stop() {
   recording = false;
   updateCourseReason();
   updateFlagReason();
+  // Editing was refused while this recorded; now that it has stopped, the
+  // reason line (if the live view is still what's on screen) has to catch up
+  // the same way the course and flag reasons just did.
+  if (viewMode === "live") updateTranscriptReason(liveSource);
 
   // If the final summary failed, markdown is empty: leave the live summary at
   // whatever the last running summary was, rather than overwriting it with

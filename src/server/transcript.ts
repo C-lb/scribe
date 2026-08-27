@@ -19,6 +19,20 @@ export function formatTimestamp(ms: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+/**
+ * Free function rather than a method, so the line-edit route (which only has
+ * an array of lines, never a live Transcript instance) can render the exact
+ * same transcript.md format a recording produces. One format string, two
+ * callers.
+ */
+export function linesToMarkdown(lines: TranscriptLine[]): string {
+  return lines
+    .slice()
+    .sort((a, b) => a.index - b.index)
+    .map((l) => `[${formatTimestamp(l.startMs)}] ${l.text}`)
+    .join("\n\n");
+}
+
 export class Transcript {
   private byIndex = new Map<number, TranscriptLine>();
 
@@ -71,9 +85,7 @@ export class Transcript {
   }
 
   toMarkdown(): string {
-    return this.lines()
-      .map((l) => `[${formatTimestamp(l.startMs)}] ${l.text}`)
-      .join("\n\n");
+    return linesToMarkdown(this.lines());
   }
 
   /**

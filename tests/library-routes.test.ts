@@ -249,6 +249,126 @@ const json = (base: string, method: string, url: string, body?: unknown) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
+describe("PATCH /api/sessions/:id/lines/:index", () => {
+  async function sessionWithLines(
+    dir: string,
+    id: string,
+    lines: Array<{ index: number; startMs: number; endMs: number; text: string; failed: boolean }>,
+  ) {
+    await mkdir(path.join(dir, id), { recursive: true });
+    await writeFile(
+      path.join(dir, id, "transcript.json"),
+      JSON.stringify({ version: 1, lines, flags: [] }),
+      "utf8",
+    );
+  }
+
+  it("saves a corrected line to both transcript files", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await sessionWithLines(dir, "2026-08-27-10-00-00", [
+        { index: 0, startMs: 0, endMs: 20_000, text: "makes RAF tolerant", failed: false },
+      ]);
+
+      const res = await json(base, "PATCH", "/api/sessions/2026-08-27-10-00-00/lines/0", {
+        text: "makes Raft tolerant",
+      });
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.line).toMatchObject({ index: 0, text: "makes Raft tolerant", edited: true });
+
+      const written = JSON.parse(
+        await readFile(path.join(dir, "2026-08-27-10-00-00", "transcript.json"), "utf8"),
+      );
+      expect(written.lines[0].text).toBe("makes Raft tolerant");
+      const markdown = await readFile(path.join(dir, "2026-08-27-10-00-00", "transcript.md"), "utf8");
+      expect(markdown).toContain("[00:00] makes Raft tolerant");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("clears the failed flag on a line that was inaudible and has now been typed in", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await sessionWithLines(dir, "2026-08-27-10-00-00", [
+        { index: 0, startMs: 0, endMs: 20_000, text: "[inaudible ~00:00]", failed: true },
+      ]);
+
+      const res = await json(base, "PATCH", "/api/sessions/2026-08-27-10-00-00/lines/0", {
+        text: "the bit the model missed",
+      });
+      const body = await res.json();
+      expect(body.line.failed).toBe(false);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("refuses to edit a line of a session that is still recording", async () => {
+    const liveId = "2026-08-27-10-00-00";
+    const { base, dir, server } = await serve(liveId);
+    try {
+      await sessionWithLines(dir, liveId, [
+        { index: 0, startMs: 0, endMs: 20_000, text: "something", failed: false },
+      ]);
+
+      const res = await json(base, "PATCH", `/api/sessions/${liveId}/lines/0`, { text: "no" });
+      expect(res.status).toBe(409);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("404s an index that is not in the transcript", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await sessionWithLines(dir, "2026-08-27-10-00-00", []);
+
+      const res = await json(base, "PATCH", "/api/sessions/2026-08-27-10-00-00/lines/7", {
+        text: "nothing here",
+      });
+      expect(res.status).toBe(404);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("rejects an empty correction rather than deleting the line", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await sessionWithLines(dir, "2026-08-27-10-00-00", [
+        { index: 0, startMs: 0, endMs: 20_000, text: "something", failed: false },
+      ]);
+
+      const res = await json(base, "PATCH", "/api/sessions/2026-08-27-10-00-00/lines/0", { text: "   " });
+      expect(res.status).toBe(400);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("400s an invalid session id or a non-numeric line index", async () => {
+    const { base, dir, server } = await serve();
+    try {
+      await sessionWithLines(dir, "2026-08-27-10-00-00", [
+        { index: 0, startMs: 0, endMs: 20_000, text: "something", failed: false },
+      ]);
+
+      expect((await json(base, "PATCH", "/api/sessions/not-an-id/lines/0", { text: "x" })).status).toBe(
+        400,
+      );
+      expect(
+        (await json(base, "PATCH", "/api/sessions/2026-08-27-10-00-00/lines/not-a-number", { text: "x" }))
+          .status,
+      ).toBe(400);
+    } finally {
+      server.close();
+    }
+  });
+});
+
 describe("library writes", () => {
   it("renames a session and returns the re-rendered library", async () => {
     const { base, dir, server } = await serve();
