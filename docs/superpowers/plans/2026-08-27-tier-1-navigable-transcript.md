@@ -32,14 +32,13 @@
 | --- | --- |
 | `src/server/transcript-file.ts` | Read and write `transcript.json`. Parse legacy `transcript.md` into lines. The single place that knows the on-disk shape. |
 | `src/server/audio-routes.ts` | Serve chunk WAVs and the concatenated session WAV, with id and index validation. |
-| `src/server/wav-join.ts` | Concatenate 16 kHz mono 16-bit WAV buffers into one valid WAV, and split a run of chunks into size-bounded windows. |
+| `src/server/wav-join.ts` | Concatenate 16 kHz mono 16-bit WAV buffers into one valid WAV. |
 | `src/server/glossary.ts` | Normalise a term list into a Whisper prompt prefix, and correct drifted terms in a chunk of text. |
 | `src/server/captions.ts` | Render lines as SRT, VTT and plain text. |
-| `src/server/retranscribe.ts` | Re-transcribe a stopped session from its kept audio in size-bounded windows. |
 | `src/web/playback.js` | Owns the single `<audio>` element: play a line, roll on into the next, report state back to the UI. |
 | `src/web/flags.js` | The flag control and its keyboard shortcut, plus the flag list rendering. |
 | `src/web/line-edit.js` | Inline correction of one transcript line. |
-| `tests/transcript-file.test.ts`, `tests/wav-join.test.ts`, `tests/glossary.test.ts`, `tests/captions.test.ts`, `tests/audio-routes.test.ts`, `tests/retranscribe.test.ts`, `tests/session-restore.test.ts`, `tests/playback.test.js`, `tests/flags.test.js`, `tests/line-edit.test.js` | One suite per unit above. |
+| `tests/transcript-file.test.ts`, `tests/wav-join.test.ts`, `tests/glossary.test.ts`, `tests/captions.test.ts`, `tests/audio-routes.test.ts`, `tests/session-restore.test.ts`, `tests/playback.test.js`, `tests/flags.test.js`, `tests/line-edit.test.js` | One suite per unit above. |
 
 **Modified:**
 
@@ -49,12 +48,12 @@
 | `src/server/transcript.ts` | Expose lines for serialisation and accept an edited line. |
 | `src/server/index.ts` | New routes for flags and audio; rehydrate live sessions at boot. |
 | `src/server/library.ts` | `LibraryCategory.terms?: string[]`. |
-| `src/server/library-routes.ts` | Return structured `lines` from `GET /api/sessions/:id`; term list CRUD; line edit; re-transcribe; export routes. |
+| `src/server/library-routes.ts` | Return structured `lines` from `GET /api/sessions/:id`; term list CRUD; line edit; export routes. |
 | `src/server/config.ts` | No change expected. Confirm before touching. |
 | `src/web/app.js` | Wire playback, flags, line editing and the course select into the existing render path. |
 | `src/web/index.html`, `src/web/styles.css` | Markup and styles for the new controls. |
 | `src/web/summary-export.js` | Add the caption and text formats to the existing export controls. |
-| `README.md` | Document every new control, route and file, and the re-transcription window limit. |
+| `README.md` | Document every new control, route and file. |
 
 ---
 
@@ -224,7 +223,6 @@ Tier 1 item 1, the highest-value item in the teardown.
   ```ts
   // wav-join.ts
   export function joinWavs(buffers: Buffer[]): Buffer            // 16 kHz mono 16-bit in, one WAV out
-  export function windowsByByteBudget(sizes: number[], budgetBytes: number): number[][]  // arrays of chunk indexes
   // audio-routes.ts
   export function createAudioRouter(deps: { config: Config }): express.Router
   ```
@@ -239,7 +237,7 @@ Tier 1 item 1, the highest-value item in the teardown.
 ```ts
 // tests/wav-join.test.ts
 import { describe, it, expect } from "vitest";
-import { joinWavs, windowsByByteBudget } from "../src/server/wav-join.js";
+import { joinWavs } from "../src/server/wav-join.js";
 
 /** A 44-byte header plus `samples` 16-bit samples of a constant value. */
 function wav(samples: number, value = 1): Buffer {
@@ -279,15 +277,6 @@ describe("joinWavs", () => {
   });
 });
 
-describe("windowsByByteBudget", () => {
-  it("packs chunks up to the budget without splitting one", () => {
-    expect(windowsByByteBudget([4, 4, 4, 4], 9)).toEqual([[0, 1], [2, 3]]);
-  });
-
-  it("gives an oversized chunk a window of its own", () => {
-    expect(windowsByByteBudget([20, 3], 9)).toEqual([[0], [1]]);
-  });
-});
 ```
 
 - [ ] **Step 2: Run it and watch it fail**
@@ -299,12 +288,10 @@ Expected: FAIL, module not found.
 
 `joinWavs` reads each input's `data` chunk size from bytes 40 to 43 and its payload from byte 44, concatenates the payloads, then writes one 44-byte header with the summed length, 16000 Hz, mono, 16-bit. It must not assume every input has the same length, only the same format, and it must reject a buffer shorter than 44 bytes with a named error rather than producing silent garbage.
 
-`windowsByByteBudget` is a plain greedy packer over the sizes, preserving order.
-
 - [ ] **Step 4: Run and watch it pass**
 
 Run: `npx vitest run tests/wav-join.test.ts`
-Expected: PASS, 4 tests.
+Expected: PASS, 2 tests.
 
 - [ ] **Step 5: Write the failing route test**
 
@@ -378,8 +365,8 @@ In `src/server/index.ts`, mount it next to the library router: `app.use(createAu
 In `src/server/session.ts`, at the end of `stop()` and only when `config.keepAudio`, write the concatenated file:
 
 ```ts
-// One file the whole lecture scrubs through. Chunk files stay: they are the
-// unit re-transcription works in, and joining is cheap to redo.
+// One file the whole lecture scrubs through. The chunk files stay: they are
+// what a single line plays, and joining them again is cheap.
 try {
   const names = (await readdir(path.join(this.dir, "audio"))).filter((n) => n.endsWith(".wav")).sort();
   const buffers = await Promise.all(names.map((n) => readFile(path.join(this.dir, "audio", n))));
@@ -761,119 +748,215 @@ git push origin HEAD
 
 ---
 
-## Task 5: Edit a line, and re-transcribe on demand
+## Task 5: Edit a line
 
-Tier 1 item 4. Note the real constraint found while planning: Groq's transcription endpoint caps uploads at 25 MB, and Scribe's audio is 16 kHz mono 16-bit, which is 1.92 MB per minute. A whole 90-minute lecture is roughly 172 MB, so "re-transcribe the concatenated file" cannot be one request. It is re-transcribed in windows of about ten minutes, each carrying the previous window's tail as its bias prompt. That is still far better context than a 20-second chunk, and the README's claim needs correcting to match.
+Tier 1 item 4, minus re-transcription. Full-lecture re-transcription is cut on instruction: it would not have been one pass anyway, since Groq caps uploads at 25 MB and Scribe's 16 kHz mono 16-bit audio runs 1.92 MB per minute, so a 90-minute lecture is roughly 172 MB. Task 3's term list attacks the same accuracy problem at the point where it starts, and a corrected line is a cheaper fix than a re-run. The README's claim that a full re-transcription is always possible stays true (the audio is kept) but must stop implying Scribe does it for you.
 
 **Files:**
-- Create: `src/server/retranscribe.ts`, `tests/retranscribe.test.ts`
 - Create: `src/web/line-edit.js`, `tests/line-edit.test.js`
 - Modify: `src/server/library-routes.ts`, `src/web/app.js`, `src/web/styles.css`, `README.md`
 
 **Interfaces:**
-- Consumes: `joinWavs` and `windowsByByteBudget` from Task 2, `promptPrefix` and `correct` from Task 3, `readLines` and `writeTranscriptFile` from Task 1.
+- Consumes: `readLines` and `writeTranscriptFile` from Task 1, `Transcript.edit` from Task 1.
 - Produces:
-  ```ts
-  export const WINDOW_BUDGET_BYTES = 20 * 1024 * 1024;   // under Groq's 25 MB, with headroom
-  export async function retranscribe(deps: {
-    dir: string;
-    terms: string[];
-    transcribe(input: { audio: Buffer; prompt?: string }): Promise<string>;
-  }): Promise<{ lines: TranscriptLine[]; windows: number }>
+  ```js
+  // line-edit.js
+  export function createLineEdit({ root, save, setStatus })  // -> { attach(), editing() }
   ```
-- Routes: `PATCH /api/sessions/:id/lines/:index` with `{ text }`, and `POST /api/sessions/:id/retranscribe`.
+- Route: `PATCH /api/sessions/:id/lines/:index` with body `{ text: string }`, answering `{ line: TranscriptLine }`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing route test**
+
+Add to `tests/library-routes.test.ts`, matching its existing fixture style:
 
 ```ts
-// tests/retranscribe.test.ts
-import { describe, it, expect, vi } from "vitest";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { retranscribe } from "../src/server/retranscribe.js";
+it("saves a corrected line to both transcript files", async () => {
+  const dir = await sessionOnDisk("2026-08-27-10-00-00", [
+    { index: 0, startMs: 0, endMs: 20_000, text: "makes RAF tolerant", failed: false },
+  ]);
 
-async function sessionWithChunks(count: number, bytesEach: number): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), "scribe-"));
-  await mkdir(path.join(dir, "audio"), { recursive: true });
-  for (let i = 0; i < count; i++) {
-    const wav = Buffer.alloc(44 + bytesEach);
-    wav.write("RIFF", 0, "ascii");
-    wav.writeUInt32LE(36 + bytesEach, 4);
-    wav.write("WAVE", 8, "ascii");
-    wav.write("data", 36, "ascii");
-    wav.writeUInt32LE(bytesEach, 40);
-    await writeFile(path.join(dir, "audio", `${String(i).padStart(4, "0")}.wav`), wav);
+  const res = await request(app).patch("/api/sessions/2026-08-27-10-00-00/lines/0")
+    .send({ text: "makes Raft tolerant" });
+
+  expect(res.status).toBe(200);
+  expect(res.body.line).toMatchObject({ index: 0, text: "makes Raft tolerant", edited: true });
+
+  const json = JSON.parse(await readFile(path.join(dir, "transcript.json"), "utf8"));
+  expect(json.lines[0].text).toBe("makes Raft tolerant");
+  const markdown = await readFile(path.join(dir, "transcript.md"), "utf8");
+  expect(markdown).toContain("[00:00] makes Raft tolerant");
+});
+
+it("clears the failed flag on a line that was inaudible and has now been typed in", async () => {
+  await sessionOnDisk("2026-08-27-10-00-00", [
+    { index: 0, startMs: 0, endMs: 20_000, text: "[inaudible ~00:00]", failed: true },
+  ]);
+  const res = await request(app).patch("/api/sessions/2026-08-27-10-00-00/lines/0")
+    .send({ text: "the bit the model missed" });
+  expect(res.body.line.failed).toBe(false);
+});
+
+it("refuses to edit a line of a session that is still recording", async () => {
+  const res = await request(liveApp).patch(`/api/sessions/${liveId}/lines/0`).send({ text: "no" });
+  expect(res.status).toBe(409);
+});
+
+it("404s an index that is not in the transcript", async () => {
+  await sessionOnDisk("2026-08-27-10-00-00", []);
+  const res = await request(app).patch("/api/sessions/2026-08-27-10-00-00/lines/7")
+    .send({ text: "nothing here" });
+  expect(res.status).toBe(404);
+});
+
+it("rejects an empty correction rather than deleting the line", async () => {
+  await sessionOnDisk("2026-08-27-10-00-00", [
+    { index: 0, startMs: 0, endMs: 20_000, text: "something", failed: false },
+  ]);
+  const res = await request(app).patch("/api/sessions/2026-08-27-10-00-00/lines/0").send({ text: "   " });
+  expect(res.status).toBe(400);
+});
+```
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `npx vitest run tests/library-routes.test.ts`
+Expected: FAIL, 404 from Express because the route does not exist.
+
+- [ ] **Step 3: Implement the route**
+
+In `src/server/library-routes.ts`, following the guards already used by every route in that file:
+
+```ts
+router.patch("/api/sessions/:id/lines/:index", async (req, res) => {
+  const { id } = req.params;
+  if (!isSessionId(id)) return res.status(400).json({ error: "invalid session id" });
+
+  const index = Number(req.params.index);
+  if (!Number.isInteger(index) || index < 0) {
+    return res.status(400).json({ error: "invalid line index" });
   }
-  return dir;
+
+  // The live transcript belongs to the recorder: it is rewritten in full on
+  // every flush, so an edit landing mid-recording would be overwritten by the
+  // next chunk without ever telling the user. The same reasoning already stops
+  // a past session being opened while recording.
+  if (deps.liveSessionId() === id) {
+    return res.status(409).json({ error: "Stop recording before correcting a line" });
+  }
+
+  const text = String(req.body?.text ?? "").trim();
+  if (!text) return res.status(400).json({ error: "a correction cannot be empty" });
+
+  const dir = path.join(sessionsDir, id);
+  const { lines, flags } = await readLines(dir);
+  const existing = lines.find((l) => l.index === index);
+  if (!existing) return res.status(404).json({ error: "unknown line" });
+
+  const line = { ...existing, text, failed: false, edited: true };
+  const next = lines.map((l) => (l.index === index ? line : l));
+
+  try {
+    await writeTranscriptFile(dir, { version: 1, lines: next, flags });
+    await writeFile(path.join(dir, "transcript.md"), `${toMarkdown(next)}\n`, "utf8");
+    res.json({ line });
+  } catch (error) {
+    console.error("[scribe] failed to save a line edit:", error);
+    res.status(500).json({ error: "internal error" });
+  }
+});
+```
+
+`toMarkdown` currently lives as a method on `Transcript`. Move the formatting to a free function in `src/server/transcript.ts` and have the class call it, so both the class and this route render the same file. Do not duplicate the format string.
+
+- [ ] **Step 4: Run and watch it pass**
+
+Run: `npx vitest run tests/library-routes.test.ts`
+Expected: PASS, including the five new tests.
+
+- [ ] **Step 5: Write the failing client test**
+
+```js
+// tests/line-edit.test.js
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createLineEdit } from "../src/web/line-edit.js";
+
+function paneWithLine(text = "makes RAF tolerant") {
+  document.body.innerHTML = `<div id="t"><p class="line" data-index="0"><span class="line__time">00:00</span>${text}</p></div>`;
+  return document.getElementById("t");
 }
 
-describe("retranscribe", () => {
-  it("sends one request per window, not one per chunk", async () => {
-    const dir = await sessionWithChunks(4, 1000);
-    const transcribe = vi.fn().mockResolvedValue("some text");
-    const result = await retranscribe({ dir, terms: [], transcribe });
-    expect(transcribe).toHaveBeenCalledTimes(1);
-    expect(result.windows).toBe(1);
+describe("createLineEdit", () => {
+  beforeEach(() => { document.body.innerHTML = ""; });
+
+  it("turns a double-clicked line into an input holding its current text", () => {
+    const root = paneWithLine();
+    createLineEdit({ root, save: vi.fn(), setStatus: vi.fn() }).attach();
+    root.querySelector(".line").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    expect(root.querySelector("input").value).toBe("makes RAF tolerant");
   });
 
-  it("carries the previous window's tail into the next prompt", async () => {
-    const dir = await sessionWithChunks(2, 15 * 1024 * 1024);
-    const transcribe = vi.fn()
-      .mockResolvedValueOnce("first window ends here")
-      .mockResolvedValueOnce("second window");
-    await retranscribe({ dir, terms: ["Raft"], transcribe });
-    expect(transcribe).toHaveBeenCalledTimes(2);
-    expect(transcribe.mock.calls[0][0].prompt).toBe("Raft.");
-    expect(transcribe.mock.calls[1][0].prompt).toContain("first window ends here");
+  it("saves on Enter and puts the new text back in the line", async () => {
+    const root = paneWithLine();
+    const save = vi.fn().mockResolvedValue({ line: { index: 0, text: "makes Raft tolerant", edited: true } });
+    createLineEdit({ root, save, setStatus: vi.fn() }).attach();
+    root.querySelector(".line").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    const input = root.querySelector("input");
+    input.value = "makes Raft tolerant";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await Promise.resolve();
+    expect(save).toHaveBeenCalledWith(0, "makes Raft tolerant");
   });
 
-  it("ignores full.wav so the audio is not transcribed twice", async () => {
-    const dir = await sessionWithChunks(2, 1000);
-    await writeFile(path.join(dir, "audio", "full.wav"), Buffer.alloc(44));
-    const transcribe = vi.fn().mockResolvedValue("text");
-    await retranscribe({ dir, terms: [], transcribe });
-    expect(transcribe).toHaveBeenCalledTimes(1);
+  it("abandons on Escape without saving", () => {
+    const root = paneWithLine();
+    const save = vi.fn();
+    createLineEdit({ root, save, setStatus: vi.fn() }).attach();
+    root.querySelector(".line").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    root.querySelector("input").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(save).not.toHaveBeenCalled();
+    expect(root.querySelector(".line").textContent).toContain("makes RAF tolerant");
   });
 
-  it("refuses a session with no kept audio rather than wiping its transcript", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "scribe-"));
-    await expect(retranscribe({ dir, terms: [], transcribe: vi.fn() })).rejects.toThrow(/no audio/i);
+  it("restores the original text and says so when the save fails", async () => {
+    const root = paneWithLine();
+    const setStatus = vi.fn();
+    const save = vi.fn().mockRejectedValue(new Error("Stop recording before correcting a line"));
+    createLineEdit({ root, save, setStatus }).attach();
+    root.querySelector(".line").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    const input = root.querySelector("input");
+    input.value = "anything";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(setStatus).toHaveBeenCalledWith("Could not save that correction: Stop recording before correcting a line");
+    expect(root.querySelector(".line").textContent).toContain("makes RAF tolerant");
   });
 });
 ```
 
-- [ ] **Step 2: Run it, watch it fail, write `src/server/retranscribe.ts`**
+`tests/dnd.test.js` already drives the DOM this way. Read it first and match its setup rather than inventing another style.
 
-Each window becomes one line spanning the window's own start and end milliseconds, derived from the byte offsets of its chunks (bytes / 32000 = seconds). The result replaces `transcript.json` and rewrites `transcript.md`, and the previous chunked transcript is kept as `transcript.chunked.md` so nothing is destroyed. Corrections from Task 3's `correct` run over each window's text.
+- [ ] **Step 6: Run it, watch it fail, write `src/web/line-edit.js`, watch it pass**
 
-- [ ] **Step 3: Run and watch it pass**
+Run: `npx vitest run tests/line-edit.test.js`
 
-Run: `npx vitest run tests/retranscribe.test.ts`
-Expected: PASS, 4 tests.
+The gesture is deliberately the same as renaming a session in the drawer: double-click, Enter to save, Escape to abandon. That is already documented in the README, so there is nothing new to learn. Editing must not fight playback: while a line is in edit mode, clicking it does not start audio.
 
-- [ ] **Step 4: The two routes**
+- [ ] **Step 7: Wire it in and mark corrected lines**
 
-`PATCH /api/sessions/:id/lines/:index` is refused with 409 while that session is recording, because the live transcript belongs to the recorder and the same reasoning already governs the reading pane. Otherwise it loads `transcript.json`, replaces the line's text, marks `edited: true`, rewrites both files and answers with the line.
+`src/web/app.js` calls `createLineEdit({ root: transcriptEl, save, setStatus })` and re-renders the line on success. An edited line carries `line--edited`, whose only visual is a quieter time stamp and a `title` reading "Corrected by hand". No new colour, no badge.
 
-`POST /api/sessions/:id/retranscribe` is refused with 409 while recording, answers 202 immediately, and runs in the background, publishing progress to the same SSE stream so the pane can say "Re-transcribing, window 2 of 9." The cost estimate is written back into `meta.json` as `retranscribedAt` and an added cost figure, since the audio is billed again.
+Editing is unavailable in the live view. The transcript pane's reason line says "Stop recording to correct a line", matching the wording the drawer already uses for reading a past session.
 
-- [ ] **Step 5: Inline editing in the pane**
+- [ ] **Step 8: Correct the README**
 
-`src/web/line-edit.js`: double-click a line to edit it, Enter saves, Escape abandons. This mirrors the rename interaction the drawer already has, which the README documents, so the gesture is already learned. An edited line shows a quiet marker and its tooltip says when it was corrected.
+The "Chunked transcription is less accurate than one long file" section says a full re-transcription is always possible. Keep that (the audio is still on disk) but state plainly that Scribe does not do it for you, that Groq's 25 MB cap means it could not be a single request at 1.92 MB per minute anyway, and that the in-app answer is the course term list plus correcting a line by hand.
 
-Test the module the way `tests/dnd.test.js` tests the drag behaviour: construct the DOM, dispatch events, assert on the calls made.
-
-- [ ] **Step 6: Correct the README's claim**
-
-The "Chunked transcription is less accurate than one long file" section currently implies a full re-transcription is one pass. Replace with the window mechanism and the 25 MB arithmetic. Do not soften the existing account of the Raft drift: Task 3 reduces it, and the honest line is that it reduces it rather than removes it.
-
-- [ ] **Step 7: Run everything and commit**
+- [ ] **Step 9: Run everything and commit**
 
 ```bash
 npm test && npm run typecheck
 git add -A
-git commit -m "Edit a line, and re-transcribe from the kept audio"
+git commit -m "Correct a transcript line by hand"
 git push origin HEAD
 ```
 
@@ -1083,14 +1166,14 @@ git push origin HEAD
 | Click a line, hear it | 2, on the foundation from 1 |
 | A term list that actually binds | 3 |
 | One key to flag a moment | 4 |
-| Edit a line, and re-transcribe on demand | 5 |
+| Edit a line (re-transcription cut on instruction) | 5 |
 | Persist the session to disk | 6 |
 | SRT, VTT, PDF and plain text | 7 |
 
 **Deliberate scope cuts, both to be reported rather than quietly dropped:**
 - Seeding a term list from a syllabus PDF with Claude. It needs a file upload route and a PDF parser, and this plan allows no new dependencies. Task 3 ships the manual list, which is what actually binds; the seeding is a convenience on top.
-- Full-lecture re-transcription in one request. Physically impossible against a 25 MB upload cap at 1.92 MB per minute. Task 5 windows it instead, and the README is corrected.
+- Full-lecture re-transcription, cut on instruction. It was never going to be one request anyway: Groq caps uploads at 25 MB and the audio runs 1.92 MB per minute, so a 90-minute lecture is roughly 172 MB. The term list in Task 3 attacks the same accuracy problem earlier and cheaper, and the README is corrected to stop implying Scribe re-runs the audio for you.
 
-**Type consistency:** `TranscriptLine` gains only `edited?: boolean` and is used unchanged by Tasks 1, 2, 5 and 7. `TranscriptFlag` is defined in Task 1 and consumed by Task 4. `joinWavs` and `windowsByByteBudget` are defined in Task 2 and consumed by Task 5. `promptPrefix` and `correct` are defined in Task 3 and consumed by Tasks 3 and 5.
+**Type consistency:** `TranscriptLine` gains only `edited?: boolean` and is used unchanged by Tasks 1, 2, 5 and 7. `TranscriptFlag` is defined in Task 1 and consumed by Task 4. `joinWavs` is defined in Task 2 and consumed only there, by `stop()`. `promptPrefix` and `correct` are defined in Task 3 and consumed only there. `toMarkdown` moves out of the `Transcript` class in Task 5 and is used by both the class and the line-edit route.
 
-**Ordering:** Task 1 is a hard prerequisite for everything. Tasks 2, 3 and 4 can then run in any order. Task 5 needs 1, 2 and 3. Task 6 needs 1. Task 7 needs 1.
+**Ordering:** Task 1 is a hard prerequisite for everything. Tasks 2, 3, 4, 5, 6 and 7 all depend only on Task 1, so after it they can run in any order. Task 5 touches the transcript pane that Task 2 also touches, so run them in sequence rather than concurrently.
