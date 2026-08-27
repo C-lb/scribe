@@ -326,9 +326,18 @@ export class Session {
   }
 
   async stop(): Promise<string> {
+    // Chained onto the queue, not awaited-then-called-directly. Awaiting the
+    // queue only guarantees this persist starts after everything queued so
+    // far -- it does not stop a chunk or flag that lands in the gap right
+    // after that await from enqueueing its own persist() and racing this one.
+    // Both share writeTranscriptFile's and writeState's one fixed temp path
+    // per file, so two writers in flight at once can clobber each other's
+    // temp file, exactly the bug flag() was already fixed for. Chaining
+    // through this.queue, the same as flag() does, keeps this the only
+    // writer in flight at any point.
+    this.queue = this.queue.then(() => this.persist());
     try {
       await this.queue;
-      await this.persist();
 
       let markdown = "";
       try {
@@ -386,11 +395,16 @@ export class Session {
       // leave the drawer showing it as "Recording" for the life of the
       // process, and a live row cannot be opened for reading.
       this.recording = false;
-      // The persist() above ran while `recording` was still true, so
+      // The persist() chained above ran while `recording` was still true, so
       // session.json on disk still says so. Write it again now that the flag
       // has flipped -- otherwise a restart right after a clean stop would read
       // recording: true and restore a session that has already finished.
-      await this.writeState().catch((error) =>
+      // Chained onto this.queue for the same reason the persist() above is:
+      // a chunk or flag queued during the try block (the final summary call
+      // above can take seconds) must finish and persist before this write,
+      // never race it, so this is always the last word on session.json.
+      this.queue = this.queue.then(() => this.writeState());
+      await this.queue.catch((error) =>
         console.error("[scribe] failed to write final session.json:", error),
       );
     }

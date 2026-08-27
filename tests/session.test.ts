@@ -7,7 +7,9 @@ import type { SessionDeps } from "../src/server/session.js";
 import { loadConfig } from "../src/server/config.js";
 import type { ScribeEvent } from "../src/server/events.js";
 
-async function testConfig(overrides: Record<string, string> = {}) {
+// Exported so other test files (tests/session-restore.test.ts) share this
+// fixture rather than keeping their own copy that can drift from it.
+export async function testConfig(overrides: Record<string, string> = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "scribe-sessions-"));
   return loadConfig({
     GROQ_API_KEY: "gsk_test",
@@ -18,7 +20,7 @@ async function testConfig(overrides: Record<string, string> = {}) {
   } as NodeJS.ProcessEnv);
 }
 
-const okDeps = () => ({
+export const okDeps = () => ({
   transcribe: vi.fn().mockResolvedValue("hello world"),
   running: vi.fn().mockResolvedValue({
     topics: ["t"], keyPoints: [], definitions: [], flagged: [], openQuestions: [],
