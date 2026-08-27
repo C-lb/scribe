@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { Session } from "../src/server/session.js";
 import { createApp } from "../src/server/index.js";
-import { testConfig, okDeps } from "./session.test.js";
+import { testConfig, okDeps } from "./fixtures.js";
 
 describe("session state on disk", () => {
   it("writes session.json as the recording runs", async () => {

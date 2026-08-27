@@ -1,32 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { mkdtemp, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { Session } from "../src/server/session.js";
 import type { SessionDeps } from "../src/server/session.js";
-import { loadConfig } from "../src/server/config.js";
 import type { ScribeEvent } from "../src/server/events.js";
-
-// Exported so other test files (tests/session-restore.test.ts) share this
-// fixture rather than keeping their own copy that can drift from it.
-export async function testConfig(overrides: Record<string, string> = {}) {
-  const dir = await mkdtemp(path.join(tmpdir(), "scribe-sessions-"));
-  return loadConfig({
-    GROQ_API_KEY: "gsk_test",
-    ANTHROPIC_API_KEY: "sk-ant-test",
-    SCRIBE_SESSIONS_DIR: dir,
-    SCRIBE_SUMMARY_INTERVAL_MINUTES: "5",
-    ...overrides,
-  } as NodeJS.ProcessEnv);
-}
-
-export const okDeps = () => ({
-  transcribe: vi.fn().mockResolvedValue("hello world"),
-  running: vi.fn().mockResolvedValue({
-    topics: ["t"], keyPoints: [], definitions: [], flagged: [], openQuestions: [],
-  }),
-  final: vi.fn().mockResolvedValue("# Notes"),
-});
+import { testConfig, okDeps } from "./fixtures.js";
 
 const chunk = (index: number) => ({
   index,
