@@ -367,6 +367,25 @@ describe("PATCH /api/sessions/:id/lines/:index", () => {
       server.close();
     }
   });
+
+  it("rejects a traversing id before it ever reaches the filesystem", async () => {
+    const { base, server } = await serve();
+    try {
+      // Same two-gate shape as the reveal route below, and the same reason
+      // for testing it here: fetch()/undici collapse a literal ".." path
+      // segment before the request leaves the process (see the raw-socket
+      // test under the reveal route for the case that would slip past that
+      // normalisation), so this uses the two forms that do reach the
+      // handler unnormalised: "%252e%252e" (a non-matching literal string
+      // once decoded once) and an encoded slash embedding a real "..".
+      for (const bad of ["%252e%252e", "2026-08-27-10-00-00%2F.."]) {
+        const res = await json(base, "PATCH", `/api/sessions/${bad}/lines/0`, { text: "no" });
+        expect(res.status).toBe(400);
+      }
+    } finally {
+      server.close();
+    }
+  });
 });
 
 describe("library writes", () => {

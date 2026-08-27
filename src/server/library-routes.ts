@@ -299,7 +299,17 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
 
   router.patch("/api/sessions/:id/lines/:index", async (req, res) => {
     const { id } = req.params;
+    // Two gates, matching the reveal route above: the id shape, then the
+    // resolved path. SESSION_ID_PATTERN alone admits only digits and hyphens
+    // today, but the second gate stays regardless, so a future loosening of
+    // that regex cannot silently reopen a traversal here.
     if (!isSessionId(id)) return res.status(400).json({ error: "invalid session id" });
+
+    const dir = path.resolve(sessionsDir, id);
+    const root = path.resolve(sessionsDir);
+    if (dir !== path.join(root, id) || !dir.startsWith(`${root}${path.sep}`)) {
+      return res.status(400).json({ error: "invalid session id" });
+    }
 
     const index = Number(req.params.index);
     if (!Number.isInteger(index) || index < 0) {
@@ -317,7 +327,6 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
     const text = String(req.body?.text ?? "").trim();
     if (!text) return res.status(400).json({ error: "a correction cannot be empty" });
 
-    const dir = path.join(sessionsDir, id);
     const { lines, flags } = await readLines(dir);
     const existing = lines.find((l) => l.index === index);
     if (!existing) return res.status(404).json({ error: "unknown line" });

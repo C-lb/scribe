@@ -121,6 +121,12 @@ class FakeElement extends FakeNode {
   }
   focus() {}
   select() {}
+  // Real blur does not bubble, and line-edit.js listens for it directly on
+  // the input rather than delegating, so this only needs to fire the
+  // listeners registered on this node itself.
+  blur() {
+    this.dispatchEvent(fakeEvent("blur", { bubbles: false }));
+  }
 }
 
 const fakeDoc = () => ({
@@ -196,6 +202,21 @@ describe("createLineEdit", () => {
     root.querySelector("input").dispatchEvent(fakeEvent("keydown", { key: "Escape" }));
     expect(save).not.toHaveBeenCalled();
     expect(root.querySelector(".line").textContent).toContain("makes RAF tolerant");
+  });
+
+  it("abandons on blur without saving, same as Escape", () => {
+    const root = paneWithLine();
+    const save = vi.fn();
+    const lineEdit = createLineEdit({ root, save, setStatus: vi.fn(), doc: fakeDoc() });
+    lineEdit.attach();
+    root.querySelector(".line").dispatchEvent(fakeEvent("dblclick"));
+    const input = root.querySelector("input");
+    input.value = "something the user typed but never committed";
+    input.blur();
+    expect(save).not.toHaveBeenCalled();
+    expect(root.querySelector("input")).toBeNull();
+    expect(root.querySelector(".line").textContent).toContain("makes RAF tolerant");
+    expect(lineEdit.editing()).toBe(false);
   });
 
   it("restores the original text and says so when the save fails", async () => {
