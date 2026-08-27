@@ -10,6 +10,7 @@ import { promptPrefix, correct } from "./glossary.js";
 import { joinWavs } from "./wav-join.js";
 import type { RunningSummary } from "./claude.js";
 import { appendFlagsSection } from "./claude.js";
+import { chunkFileName, CHUNK_FILE_PATTERN } from "../shared/filename.js";
 
 /** Groq whisper-large-v3-turbo list price, USD per hour of audio. */
 const GROQ_USD_PER_AUDIO_HOUR = 0.04;
@@ -130,6 +131,20 @@ export class Session {
     session.transcript.load(lines);
     session.flags = flags;
 
+    // The running summary is accumulated, not recomputed from scratch: each
+    // pass is handed the previous one. Without this, a restart threw that
+    // accumulation away and the next running summary was built from `null`,
+    // so everything the model had already worked out about the lecture was
+    // silently dropped. Absent or corrupt is fine, it just starts over.
+    try {
+      const raw = await readFile(path.join(dir, "running-summary.json"), "utf8");
+      session.summary = JSON.parse(raw) as RunningSummary;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.error(`[scribe] could not restore the running summary in ${dir}:`, error);
+      }
+    }
+
     return session;
   }
 
@@ -145,8 +160,26 @@ export class Session {
     endMs: number;
     audio: Buffer;
   }): Promise<void> {
-    this.queue = this.queue.then(() => this.processChunk(input));
-    await this.queue;
+    await this.enqueue(() => this.processChunk(input));
+  }
+
+  /**
+   * The only way anything is put on this.queue. Whatever is stored back into
+   * the chain is always a promise that settles fulfilled, so one failed
+   * operation can never poison every later one: a rejected promise left in
+   * this.queue would make every subsequent `.then()` skip its work and reject
+   * too, and a recording would go silently dead while the browser kept
+   * getting its 202s. A failure is logged here and the chain carries on.
+   */
+  private enqueue(work: () => Promise<unknown>): Promise<void> {
+    const next = this.queue.then(work).then(
+      () => undefined,
+      (error) => {
+        console.error("[scribe] queued session work failed:", error);
+      },
+    );
+    this.queue = next;
+    return next;
   }
 
   private async processChunk(input: {
@@ -157,10 +190,7 @@ export class Session {
   }): Promise<void> {
     const { index, startMs, endMs } = input;
     try {
-      if (this.config.keepAudio) {
-        const name = `${String(index).padStart(4, "0")}.wav`;
-        await writeFile(path.join(this.dir, "audio", name), input.audio);
-      }
+      await this.keepChunkAudio(index, input.audio);
 
       this.audioSeconds += (endMs - startMs) / 1000;
 
@@ -227,6 +257,35 @@ export class Session {
     }
   }
 
+  /**
+   * Keeping the audio matters strictly less than transcribing it, so this
+   * never throws: it used to be the first statement of processChunk's try,
+   * where a full disk or a missing audio/ directory aborted the chunk before
+   * it was ever sent to Whisper, and the line, the SSE event and the summary
+   * all went with it. The directory really can go missing under a running
+   * recording (the session folder deleted by hand, an external drive
+   * remounting), so a first failure is retried once after recreating it --
+   * Transcript.flush() already recreates the session directory the same way,
+   * but not audio/ inside it.
+   */
+  private async keepChunkAudio(index: number, audio: Buffer): Promise<void> {
+    if (!this.config.keepAudio) return;
+    const dir = path.join(this.dir, "audio");
+    const file = path.join(dir, chunkFileName(index));
+    try {
+      await writeFile(file, audio);
+      return;
+    } catch (error) {
+      console.error(`[scribe] could not write audio for chunk ${index}, retrying:`, error);
+    }
+    try {
+      await mkdir(dir, { recursive: true });
+      await writeFile(file, audio);
+    } catch (error) {
+      console.error(`[scribe] gave up keeping audio for chunk ${index}:`, error);
+    }
+  }
+
   /** transcript.md stays the human artefact; transcript.json is the one the app
    *  reads back, because Markdown loses the chunk index and the millisecond.
    *  session.json is the third write here, on the same schedule, because it is
@@ -234,7 +293,12 @@ export class Session {
    *  restart -- a session.json that lagged behind the other two could tell a
    *  restart to skip a session that was, in fact, still recording. */
   private async persist(): Promise<void> {
-    await this.transcript.flush();
+    // Guarded exactly like its two siblings below. Unguarded, one EACCES or
+    // ENOSPC on transcript.md took the other two writes down with it and,
+    // through the promise chain, every later chunk as well.
+    await this.transcript
+      .flush()
+      .catch((error) => console.error("[scribe] failed to write transcript.md:", error));
     await writeTranscriptFile(this.dir, {
       version: 1,
       lines: this.transcript.lines(),
@@ -284,7 +348,7 @@ export class Session {
     const flag: TranscriptFlag = { atMs, chunkIndex: line?.index ?? null };
     this.flags.push(flag);
     this.events.publish({ type: "flag", flag });
-    this.queue = this.queue.then(() => this.persist());
+    void this.enqueue(() => this.persist());
     return flag;
   }
 
@@ -335,9 +399,13 @@ export class Session {
     // temp file, exactly the bug flag() was already fixed for. Chaining
     // through this.queue, the same as flag() does, keeps this the only
     // writer in flight at any point.
-    this.queue = this.queue.then(() => this.persist());
+    // enqueue() never hands back a rejected promise, so a persist that failed
+    // (a full disk, an unwritable transcript.md) is logged and stop() carries
+    // on to write summary.md, meta.json, full.wav and, in the finally below,
+    // recording: false. A stop that threw here used to leave session.json
+    // claiming the lecture was still running.
     try {
-      await this.queue;
+      await this.enqueue(() => this.persist());
 
       let markdown = "";
       try {
@@ -377,7 +445,10 @@ export class Session {
       if (this.config.keepAudio) {
         try {
           const names = (await readdir(path.join(this.dir, "audio")))
-            .filter((n) => n.endsWith(".wav") && n !== "full.wav")
+            // The pattern matches exactly what chunkFileName() writes, so
+            // full.wav (the join's own output, in the same directory) is
+            // excluded by shape rather than by name.
+            .filter((n) => CHUNK_FILE_PATTERN.test(n))
             .sort();
           const buffers = await Promise.all(
             names.map((n) => readFile(path.join(this.dir, "audio", n))),
@@ -403,17 +474,30 @@ export class Session {
       // a chunk or flag queued during the try block (the final summary call
       // above can take seconds) must finish and persist before this write,
       // never race it, so this is always the last word on session.json.
-      this.queue = this.queue.then(() => this.writeState());
-      await this.queue.catch((error) =>
-        console.error("[scribe] failed to write final session.json:", error),
-      );
+      await this.enqueue(() => this.writeState());
     }
   }
 }
 
 /**
+ * Rewrites one session.json with recording: false, leaving every other field
+ * as it was. Used for a directory left marked live by a crash: nothing else
+ * ever clears that flag, so without this the row stays "Recording" forever,
+ * cannot be opened for reading, cannot be hidden, and 409s every line edit.
+ * Same temp-then-rename discipline as writeState().
+ */
+async function closeStaleSession(dir: string): Promise<void> {
+  const target = path.join(dir, "session.json");
+  const raw = await readFile(target, "utf8");
+  const state = { ...(JSON.parse(raw) as SessionStateV1), recording: false };
+  const tmp = `${target}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  await rename(tmp, target);
+}
+
+/**
  * Scans sessionsDir for a session.json that still says recording: true and
- * rebuilds each one, newest first. Called from the boot block in index.ts
+ * rebuilds the newest one. Called from the boot block in index.ts
  * before listen(), so it seeds the same Map the routes read and a chunk
  * arriving right after the restart finds its session instead of a 404.
  *
@@ -441,7 +525,26 @@ export async function restoreLiveSessions(config: Config, deps: SessionDeps): Pr
     const dir = path.join(config.sessionsDir, name);
     try {
       const session = await Session.restore(dir, config, deps);
-      if (session) restored.push(session);
+      if (!session) continue;
+
+      // Scribe records one lecture at a time. Since the scan runs newest
+      // first, the first live session found is the interrupted recording;
+      // any older one still marked live is a crash remnant from a previous
+      // run, not a second concurrent lecture. Left alone it would be
+      // restored again on every future boot and could never be cleared, so
+      // it is closed here rather than resurrected -- and said out loud,
+      // because silently rewriting a session's state is not something to
+      // discover later from a diff.
+      if (restored.length === 0) {
+        restored.push(session);
+        continue;
+      }
+
+      await closeStaleSession(dir);
+      console.log(
+        `[scribe] closed ${session.id}, which was left marked as recording by an earlier run; ` +
+          `only the newest live recording (${restored[0].id}) is resumed`,
+      );
     } catch (error) {
       console.error(`[scribe] failed to restore session at ${dir}:`, error);
     }

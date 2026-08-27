@@ -5,6 +5,7 @@ import path from "node:path";
 import type { Config } from "./config.js";
 import { isSessionId } from "./library.js";
 import { joinWavs } from "./wav-join.js";
+import { chunkFileName, CHUNK_FILE_PATTERN } from "../shared/filename.js";
 
 export interface AudioRouterDeps {
   config: Config;
@@ -51,7 +52,7 @@ export function createAudioRouter(deps: AudioRouterDeps): express.Router {
     if (!audioDir) return res.status(400).json({ error: "invalid session id" });
     if (!isNonNegativeInteger(index)) return res.status(400).json({ error: "invalid chunk index" });
 
-    const name = `${String(Number(index)).padStart(4, "0")}.wav`;
+    const name = chunkFileName(index);
     const filePath = path.join(audioDir, name);
     // Belt and braces, the same reasoning as the reveal route: the filename is
     // built from a validated integer, but the resolved path is re-checked
@@ -86,7 +87,7 @@ export function createAudioRouter(deps: AudioRouterDeps): express.Router {
 
     let names: string[];
     try {
-      names = (await readdir(audioDir)).filter((n) => /^\d{4}\.wav$/.test(n)).sort();
+      names = (await readdir(audioDir)).filter((n) => CHUNK_FILE_PATTERN.test(n)).sort();
     } catch {
       return res.status(404).json({ error: "unknown session" });
     }

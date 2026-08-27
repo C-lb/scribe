@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { Session } from "../src/server/session.js";
+import { Session, restoreLiveSessions } from "../src/server/session.js";
 import { createApp } from "../src/server/index.js";
 import { testConfig, okDeps } from "./fixtures.js";
 
@@ -119,5 +119,64 @@ describe("restoring a session into a running server", () => {
     });
     expect(res.status).toBe(202);
     server.close();
+  });
+});
+
+describe("boot-time restore of a crashed recording", () => {
+  // Important D from the whole-branch review. Nothing else ever clears the
+  // recording flag, so before this a single crash left a row that was live
+  // forever: un-openable, un-hideable, and a permanent 409 on line edits.
+  it("restores only the newest live session and closes the older one", async () => {
+    const config = await testConfig();
+    const deps = okDeps();
+
+    const stale = "2026-08-27-09-00-00";
+    const live = "2026-08-27-11-00-00";
+    for (const id of [stale, live]) {
+      await mkdir(path.join(config.sessionsDir, id), { recursive: true });
+      await writeFile(
+        path.join(config.sessionsDir, id, "session.json"),
+        JSON.stringify({
+          version: 1,
+          id,
+          recording: true,
+          audioSeconds: 0,
+          failedChunks: 0,
+          silenceArtefacts: 0,
+          lastSummarisedIndex: 0,
+          categoryId: null,
+          terms: [],
+        }),
+        "utf8",
+      );
+    }
+
+    const restored = await restoreLiveSessions(config, deps);
+
+    expect(restored.map((s) => s.id)).toEqual([live]);
+    const closed = JSON.parse(
+      await readFile(path.join(config.sessionsDir, stale, "session.json"), "utf8"),
+    );
+    expect(closed.recording).toBe(false);
+    // Everything else about the crash remnant is left exactly as it was.
+    expect(closed.id).toBe(stale);
+  });
+
+  it("carries the running summary across a restart rather than starting it over", async () => {
+    const config = await testConfig({ SCRIBE_SUMMARY_INTERVAL_MINUTES: "0" });
+    const deps = okDeps();
+    const first = await Session.create(config, deps);
+    // Two chunks: the running summary only fires once the transcript has
+    // moved past the last index it summarised.
+    await first.ingestChunk({ index: 1, startMs: 0, endMs: 20_000, audio: Buffer.alloc(0) });
+
+    const saved = JSON.parse(await readFile(path.join(first.dir, "running-summary.json"), "utf8"));
+
+    // The process died here. The next running summary must be handed what the
+    // model had already worked out, not null.
+    const restored = await Session.restore(first.dir, config, deps);
+    await restored!.ingestChunk({ index: 2, startMs: 20_000, endMs: 40_000, audio: Buffer.alloc(0) });
+
+    expect(deps.running.mock.calls.at(-1)?.[1]).toEqual(saved);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { Session } from "../src/server/session.js";
 import type { SessionDeps } from "../src/server/session.js";
@@ -295,5 +295,57 @@ describe("Session", () => {
     // The second prompt carries the corrected tail, never the drifted one.
     expect(prompts[1]).toContain("Raft");
     expect(prompts[1]).not.toContain("RAF ");
+  });
+  // Critical A from the whole-branch review. Proven first with EACCES on
+  // transcript.md; a directory in its place is the same failure (EISDIR) and
+  // needs no chmod, which root would ignore anyway.
+  it("keeps transcribing later chunks after a persist failure, and still stops cleanly", async () => {
+    const deps = okDeps();
+    const session = await Session.create(await testConfig(), deps);
+
+    // transcript.md cannot be written from here on: exactly what a full disk
+    // or a permissions change mid-lecture looks like to Transcript.flush().
+    await mkdir(path.join(session.dir, "transcript.md"), { recursive: true });
+
+    await session.ingestChunk(chunk(1));
+    // A flag puts its own persist() on the same queue, and that one is not
+    // wrapped in processChunk's catch: on the old code its rejection was
+    // stored straight back into this.queue and every later .then() skipped
+    // its work, so the recording went dead while the browser kept getting
+    // its 202s.
+    session.flag(1_000);
+    await session.ingestChunk(chunk(2));
+    await session.ingestChunk(chunk(3));
+
+    expect(deps.transcribe).toHaveBeenCalledTimes(3);
+
+    // And stop() used to throw before writing any of these.
+    await expect(session.stop()).resolves.toBeTypeOf("string");
+    const state = JSON.parse(await readFile(path.join(session.dir, "session.json"), "utf8"));
+    expect(state.recording).toBe(false);
+    expect(await readFile(path.join(session.dir, "summary.md"), "utf8")).toContain("# Notes");
+  });
+
+  // Important C. Deleting the session directory mid-recording is how the
+  // reviewer proved it: flush()'s recursive mkdir brings the session
+  // directory back but not audio/ inside it, so every later chunk failed at
+  // the audio write and was never sent to Whisper at all.
+  it("transcribes a chunk even when its audio cannot be written, and recreates audio/", async () => {
+    const deps = okDeps();
+    const session = await Session.create(await testConfig(), deps);
+    await session.ingestChunk(chunk(1));
+
+    await rm(session.dir, { recursive: true, force: true });
+
+    await session.ingestChunk(chunk(2));
+
+    expect(deps.transcribe).toHaveBeenCalledTimes(2);
+    const lines = JSON.parse(
+      await readFile(path.join(session.dir, "transcript.json"), "utf8"),
+    ).lines as { index: number }[];
+    expect(lines.map((l) => l.index)).toEqual([1, 2]);
+    // The audio is kept too, once the directory is back: losing it is allowed,
+    // losing it forever is not.
+    expect((await stat(path.join(session.dir, "audio", "0002.wav"))).isFile()).toBe(true);
   });
 });
