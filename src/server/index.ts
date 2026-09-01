@@ -14,6 +14,13 @@ import { snapshotLibrary, defaultTitle, readLibrary, writeLibrary, setEntry } fr
 // __dirname does not exist in ES modules.
 const here = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.resolve(here, "..", "web");
+// src/shared holds the few modules the browser and the server both import.
+// The server reaches them through the filesystem, but a web module asking for
+// "../shared/filename.js" resolves to /shared/... in the browser, which is
+// outside webRoot and would 404 -- taking the whole ES module graph, and so
+// every listener on the page, down with it. Mounted, not copied, so the two
+// sides can never drift.
+const sharedRoot = path.resolve(here, "..", "shared");
 
 export function createApp(
   config: Config,
@@ -184,6 +191,7 @@ export function createApp(
   app.use(createLibraryRouter({ config, liveSessionId, isRecording }));
   app.use(createAudioRouter({ config }));
 
+  app.use("/shared", express.static(sharedRoot));
   app.use(express.static(webRoot));
   return app;
 }
