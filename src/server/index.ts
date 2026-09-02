@@ -10,6 +10,7 @@ import { createLibraryRouter } from "./library-routes.js";
 import { createAudioRouter } from "./audio-routes.js";
 import { sameOriginOnly } from "./same-origin.js";
 import { snapshotLibrary, defaultTitle, readLibrary, writeLibrary, setEntry } from "./library.js";
+import { exportSessionQuietly } from "./obsidian.js";
 
 // __dirname does not exist in ES modules.
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -158,6 +159,14 @@ export function createApp(
     if (!session) return res.status(404).json({ error: "unknown session" });
     try {
       const markdown = await session.stop();
+      // After stop(), so summary.md, transcript.md and meta.json are all on
+      // disk and the note is complete. Quietly: a vault on an unmounted disk
+      // must not turn a finished lecture into a 500.
+      await exportSessionQuietly({
+        sessionsDir: config.sessionsDir,
+        obsidianDir: config.obsidianDir,
+        id: session.id,
+      });
       res.json({ markdown });
     } catch (error) {
       console.error(`[scribe] failed to stop session ${req.params.id}:`, error);

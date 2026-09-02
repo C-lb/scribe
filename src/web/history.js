@@ -533,6 +533,15 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
 
     items.push({ label: "Reveal in Finder", run: () => reveal(session) });
 
+    // Finished sessions only: the note is written from summary.md and
+    // transcript.md, and neither is complete until the recording stops. Every
+    // session that stops from now on exports itself, so this is here for the
+    // ones recorded before the vault existed, and for a vault that was
+    // unmounted when a lecture ended.
+    if (!session.live) {
+      items.push({ label: "Export to Obsidian", run: () => exportToObsidian(session) });
+    }
+
     // Never offered on the session being recorded: hiding it would take the
     // row out from under the user mid-lecture, and that row is also the only
     // route back to the live panes.
@@ -607,6 +616,18 @@ export function createHistory({ root, toggle, setStatus, canOpen, onOpen, onLive
       await api("POST", `/api/sessions/${session.id}/reveal`);
     } catch (error) {
       setStatus(`Could not open the folder: ${error.message}`);
+    }
+  }
+
+  /** Names the file it wrote, because the whole point is knowing where in the
+   *  vault to go and look. */
+  async function exportToObsidian(session) {
+    try {
+      const result = await api("POST", `/api/sessions/${session.id}/export`);
+      const written = result?.relativePath ? ` to ${result.relativePath}` : "";
+      setStatus(`Exported${written}`);
+    } catch (error) {
+      setStatus(`Could not export to Obsidian: ${error.message}`);
     }
   }
 

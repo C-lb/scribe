@@ -8,6 +8,7 @@ import { readLines, writeTranscriptFile } from "./transcript-file.js";
 import { linesToMarkdown } from "./transcript.js";
 import { toSrt, toVtt, toPlainText } from "./captions.js";
 import { sanitiseFilename, CHUNK_FILE_PATTERN } from "../shared/filename.js";
+import { exportSession, exportSessionQuietly } from "./obsidian.js";
 import {
   isSessionId,
   defaultTitle,
@@ -147,7 +148,7 @@ function isCaptionFormat(value: string): value is CaptionFormat {
 
 export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
   const router = express.Router();
-  const { sessionsDir } = deps.config;
+  const { sessionsDir, obsidianDir } = deps.config;
 
   router.use(express.json({ limit: "256kb" }));
 
@@ -170,6 +171,10 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
   async function mutate(
     res: express.Response,
     change: (file: LibraryFile) => LibraryFile | Promise<LibraryFile>,
+    /** Sessions whose Obsidian note this change moves or retitles, read off
+     *  the library as it will be written. Re-exported after the write, so a
+     *  rename in the drawer renames the note too. */
+    affected?: (file: LibraryFile) => string[],
   ): Promise<void> {
     // Before anything else, and before the change runs: the write prunes every
     // entry not in this list, so a listing we could not read is a reason to
@@ -191,6 +196,16 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
 
     try {
       await writeLibrary(sessionsDir, next, ids);
+      // Before the response, so the drawer never renders a state the vault
+      // has not caught up with, and quietly, so a vault problem cannot make a
+      // rename that already succeeded look like it failed.
+      if (obsidianDir && affected) {
+        const wanted = new Set(ids);
+        for (const id of affected(next)) {
+          if (!wanted.has(id)) continue;
+          await exportSessionQuietly({ sessionsDir, obsidianDir, id });
+        }
+      }
       await respondWithLibrary(res);
     } catch (error) {
       console.error("[scribe] library write failed:", error);
@@ -287,7 +302,14 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
     if ("hidden" in req.body) {
       patch.hidden = req.body.hidden === null ? null : Boolean(req.body.hidden);
     }
-    await mutate(res, (file) => setEntry(file, id, patch));
+    await mutate(
+      res,
+      (file) => setEntry(file, id, patch),
+      // A rename changes the note's filename, a refile changes its folder.
+      // Hiding is deliberately not on this list: hiding destroys nothing in
+      // the sessions folder and destroys nothing in the vault either.
+      () => (patch.title !== undefined || patch.categoryId !== undefined ? [id] : []),
+    );
   });
 
   router.post("/api/categories", async (req, res) => {
@@ -307,11 +329,36 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
     // into the named Error mutate() reports as a 400, per the convention the
     // rest of this route follows for anything more than a scalar field.
     if ("terms" in req.body) patch.terms = req.body.terms;
-    await mutate(res, (file) => updateCategory(file, req.params.id, patch));
+    await mutate(
+      res,
+      (file) => updateCategory(file, req.params.id, patch),
+      // Renaming a category renames its folder in the vault, which means
+      // every note filed under it has to move. Only for a name change: an
+      // order or terms edit leaves every path alone.
+      (file) =>
+        patch.name === undefined
+          ? []
+          : Object.entries(file.entries)
+              .filter(([, entry]) => entry.categoryId === req.params.id)
+              .map(([id]) => id),
+    );
   });
 
   router.delete("/api/categories/:id", async (req, res) => {
-    await mutate(res, (file) => deleteCategory(file, req.params.id));
+    // Captured before the delete, because afterwards nothing on the entry
+    // remembers which category it used to be filed under; these are the
+    // sessions whose notes move down into Uncategorised.
+    let orphaned: string[] = [];
+    await mutate(
+      res,
+      (file) => {
+        orphaned = Object.entries(file.entries)
+          .filter(([, entry]) => entry.categoryId === req.params.id)
+          .map(([id]) => id);
+        return deleteCategory(file, req.params.id);
+      },
+      () => orphaned,
+    );
   });
 
   router.put("/api/library/order", async (req, res) => {
@@ -335,7 +382,15 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
       })),
       ...(categoryIdsRaw !== undefined ? { categoryIds: categoryIdsRaw.map(String) } : {}),
     };
-    await mutate(res, (file) => applyOrder(file, payload));
+    await mutate(
+      res,
+      (file) => applyOrder(file, payload),
+      // A drag reorders and can also refile, and the payload does not say
+      // which of the two it was. Re-exporting every session it names is a
+      // no-op for the ones that only moved within their folder: the note is
+      // rewritten at the same path.
+      () => payload.groups.flatMap((group) => group.sessionIds),
+    );
   });
 
   router.post("/api/sessions/:id/reveal", async (req, res) => {
@@ -359,6 +414,29 @@ export function createLibraryRouter(deps: LibraryRouterDeps): express.Router {
     } catch (error) {
       console.error("[scribe] reveal failed:", error);
       res.status(500).json({ error: "could not open the folder" });
+    }
+  });
+
+  /**
+   * The manual path, for the sessions that were recorded before any of this
+   * existed. Loud where the automatic exports are quiet: somebody pressed a
+   * button and is owed an answer either way.
+   */
+  router.post("/api/sessions/:id/export", async (req, res) => {
+    const { id } = req.params;
+    if (!resolveSessionDir(sessionsDir, id)) {
+      return res.status(400).json({ error: "invalid session id" });
+    }
+    if (!obsidianDir) {
+      return res.status(409).json({ error: "no Obsidian vault configured (SCRIBE_OBSIDIAN_VAULT)" });
+    }
+
+    try {
+      const result = await exportSession({ sessionsDir, obsidianDir, id });
+      res.json({ path: result?.path ?? null, relativePath: result?.relativePath ?? null });
+    } catch (error) {
+      console.error(`[scribe] Obsidian export failed for ${id}:`, error);
+      res.status(500).json({ error: "could not write the note" });
     }
   });
 

@@ -12,6 +12,13 @@ export interface Config {
   port: number;
   language: string;
   sessionsDir: string;
+  /**
+   * The folder inside an Obsidian vault that finished sessions are mirrored
+   * into, one folder per category beneath it. null when SCRIBE_OBSIDIAN_VAULT
+   * is unset, which turns the whole export off rather than guessing at a
+   * vault: writing notes into somebody's vault uninvited is not a default.
+   */
+  obsidianDir: string | null;
 }
 
 function required(env: NodeJS.ProcessEnv, key: string): string {
@@ -52,5 +59,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sessionsDir:
       env.SCRIBE_SESSIONS_DIR?.trim() ||
       path.join(os.homedir(), "scribe", "sessions"),
+    // Resolved here so a relative path in .env cannot depend on the working
+    // directory the server happened to start in.
+    obsidianDir: env.SCRIBE_OBSIDIAN_VAULT?.trim()
+      ? path.resolve(env.SCRIBE_OBSIDIAN_VAULT.trim())
+      : null,
   };
 }

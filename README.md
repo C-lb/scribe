@@ -118,6 +118,29 @@ All of these live in `.env`, with defaults from `.env.example`:
 | `SCRIBE_LANGUAGE` | `en` | Language hint passed to Whisper. |
 | `SCRIBE_PORT` | `4747` | Port the server listens on. |
 | `SCRIBE_SESSIONS_DIR` | `~/scribe/sessions` | Where session directories are written. The test suites override this; leave it unset for normal use. |
+| `SCRIBE_OBSIDIAN_VAULT` | (unset) | Folder inside an Obsidian vault that finished sessions are mirrored into. Unset turns the export off. |
+
+## Obsidian
+
+With `SCRIBE_OBSIDIAN_VAULT` pointing at a folder inside a vault (say `~/Vault/Resources/Scribe`), every session that finishes writes itself there as a note: one folder per library category, one `.md` per session, `Uncategorised/` for anything unfiled.
+
+```
+Resources/Scribe/
+  BUSI 520/
+    Week 3 - cash flows.md
+  Uncategorised/
+    25 August 2026, 12-04.md
+```
+
+The note opens with YAML frontmatter (`scribe_id`, `title`, `category`, `date`, `duration`, `tags: [scribe]`), then the summary, then the timestamped transcript. Characters Obsidian or the filesystem refuse — `/ : # ^ [ ] | * ? " < >` — become hyphens in the filename, so `12:04` reads as `12-04`; the title inside the note keeps the colon.
+
+The vault is a projection and never a source of truth. Nothing is read back out of it, and a vault that is missing or on an unmounted disk is a line in the log, never a failed recording or a failed rename.
+
+Renaming a session, refiling it, renaming a category or deleting one moves the note to match. The note it should move is found by reading `scribe_id` out of the frontmatter of every note under the Scribe root, rather than by remembering the last path written: `library.json` is disposable by design, and a remembered path lost with it would orphan the note and then duplicate it. Notes you wrote yourself are left alone, because they have no `scribe_id`.
+
+Hiding a session leaves its note where it is, the same way it leaves the session folder alone.
+
+**Export to Obsidian** in a session's right-click menu writes the note on demand — for the sessions recorded before the vault was configured, and for a lecture that ended while the vault was unreachable. It names the file it wrote in the status line.
 
 ## Tests
 
