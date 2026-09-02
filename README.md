@@ -2,6 +2,8 @@
 
 Scribe is a localhost web app that records a lecture from your microphone, transcribes it in roughly 20-second chunks through Groq's Whisper API, and keeps a running Claude-written summary next to the live transcript as it goes. When you stop recording, it writes a full Markdown revision document from the whole transcript.
 
+For how the recording and transcription pipeline actually works, in plain language, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Setup
 
 Requires Node 20 or later.
