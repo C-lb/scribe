@@ -92,5 +92,79 @@ export function isHallucination(text: string): boolean {
  * nothing", which also keeps the phrase out of the next chunk's bias prompt.
  */
 export function filterChunkText(text: string): string {
-  return isHallucination(text) ? "" : text;
+  const collapsed = collapseRepetitiveArtifacts(text);
+  return isHallucination(collapsed) ? "" : collapsed;
+}
+
+/** Ported from Voicebox's `collapse_repetitive_artifacts`
+ *  (backend/services/refinement.py, MIT). A 6-token repeat is almost never
+ *  something a lecturer said; it is Whisper's decoder stuck in a loop. Six
+ *  keeps rhetorical repetition ("no, no, no, no, no") intact. */
+const REPETITION_RUN_THRESHOLD = 6;
+
+/** Longest repeating unit the character pass looks for. Long enough for every
+ *  loop phrase seen in the wild ("Please like and subscribe to my channel." is
+ *  41 characters), short enough that a genuinely repeated sentence in speech
+ *  stays below the run threshold. */
+const MAX_REPETITION_UNIT_CHARS = 60;
+
+/** Strip surrounding punctuation and case so "URL", "url," and "URL." compare
+ *  equal inside a run. Unicode-aware so CJK tokens are not emptied. */
+function tokenKey(word: string): string {
+  return word.replace(/[^\p{L}\p{N}_]/gu, "").toLowerCase();
+}
+
+function collapseWordRuns(text: string, minRun: number): string {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length < minRun) return text;
+
+  const out: string[] = [];
+  let i = 0;
+  while (i < words.length) {
+    const key = tokenKey(words[i]);
+    let j = i;
+    if (key) {
+      while (j < words.length && tokenKey(words[j]) === key) j += 1;
+    } else {
+      // An all-punctuation token never starts a run.
+      j = i + 1;
+    }
+    if (j - i < minRun) out.push(...words.slice(i, j));
+    i = j;
+  }
+  return out.join(" ");
+}
+
+function collapseCharacterRuns(text: string, minRun: number): string {
+  // Non-greedy unit so the shortest repeating substring wins; a 2-character
+  // floor leaves emphasis like "wooooooow" alone. [\s\S] rather than a dotAll
+  // flag so a newline inside a looped unit still matches.
+  const pattern = new RegExp(
+    `([\\s\\S]{2,${MAX_REPETITION_UNIT_CHARS}}?)\\1{${minRun - 1},}`,
+    "g",
+  );
+  const result = text.replace(pattern, "");
+  if (result === text) return text;
+  // Only normalise whitespace when something was removed, so untouched
+  // transcripts keep their own spacing.
+  return result.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Remove Whisper's loop artefacts: a token repeated six or more times in a
+ * row ("URL URL URL URL URL URL"), or a 2 to 60 character unit repeated six or
+ * more times back to back ("thanks for watching " x 6, "謝謝觀看" x 7). The
+ * word pass handles the first shape and normalises punctuation between
+ * repeats; the character pass handles multi-word and CJK loops where no two
+ * consecutive tokens are identical.
+ *
+ * The whole run is dropped rather than reduced to one copy. The prose either
+ * side still carries the thought, and one surviving "thanks for watching"
+ * would go straight back into the next chunk's bias prompt.
+ */
+export function collapseRepetitiveArtifacts(
+  text: string,
+  minRun: number = REPETITION_RUN_THRESHOLD,
+): string {
+  return collapseCharacterRuns(collapseWordRuns(text, minRun), minRun);
 }

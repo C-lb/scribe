@@ -43,17 +43,18 @@ describe("loadConfig", () => {
       loadConfig({ ...base, SCRIBE_CHUNK_SECONDS: "abc" } as NodeJS.ProcessEnv),
     ).toThrow(/SCRIBE_CHUNK_SECONDS/);
   });
-  it("defaults SCRIBE_STT to auto with the Voicebox desktop port", () => {
+  it("defaults SCRIBE_STT to auto with the sidecar on 4748 and the turbo model", () => {
     const c = loadConfig({ ...base } as NodeJS.ProcessEnv);
     expect(c.sttEngine).toBe("auto");
-    expect(c.voiceboxUrl).toBe("http://127.0.0.1:17493");
-    expect(c.voiceboxModel).toBeNull();
+    expect(c.localSttPort).toBe(4748);
+    expect(c.localSttUrl).toBe("http://127.0.0.1:4748");
+    expect(c.localSttModel).toBe("mlx-community/whisper-large-v3-turbo");
   });
 
-  it("lets GROQ_API_KEY be absent only when SCRIBE_STT=voicebox", () => {
+  it("lets GROQ_API_KEY be absent only when SCRIBE_STT=local", () => {
     const c = loadConfig({
       ANTHROPIC_API_KEY: "sk-ant-test",
-      SCRIBE_STT: "voicebox",
+      SCRIBE_STT: "local",
     } as NodeJS.ProcessEnv);
     expect(c.groqApiKey).toBeNull();
     expect(() =>
@@ -61,9 +62,9 @@ describe("loadConfig", () => {
     ).toThrow(/GROQ_API_KEY/);
   });
 
-  it("strips a trailing slash from SCRIBE_VOICEBOX_URL and rejects unknown engines", () => {
-    const c = loadConfig({ ...base, SCRIBE_VOICEBOX_URL: "http://localhost:9999/" } as NodeJS.ProcessEnv);
-    expect(c.voiceboxUrl).toBe("http://localhost:9999");
-    expect(() => loadConfig({ ...base, SCRIBE_STT: "whisper" } as NodeJS.ProcessEnv)).toThrow(/SCRIBE_STT/);
+  it("derives the sidecar URL from the port and rejects unknown engines", () => {
+    const c = loadConfig({ ...base, SCRIBE_LOCAL_STT_PORT: "9999" } as NodeJS.ProcessEnv);
+    expect(c.localSttUrl).toBe("http://127.0.0.1:9999");
+    expect(() => loadConfig({ ...base, SCRIBE_STT: "voicebox" } as NodeJS.ProcessEnv)).toThrow(/SCRIBE_STT/);
   });
 });

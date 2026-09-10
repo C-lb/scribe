@@ -1,33 +1,31 @@
 import type { Config } from "./config.js";
 import type { TranscribeInput } from "./groq.js";
-import { VoiceboxUnavailable } from "./voicebox.js";
+import { LocalSttUnavailable } from "./local-stt.js";
 
 export interface Transcriber {
   transcribe(input: TranscribeInput): Promise<string>;
 }
 
 export interface SttDeps {
-  /** null when SCRIBE_STT=voicebox and no Groq key was given. */
+  /** null when SCRIBE_STT=local and no Groq key was given. */
   groq: Transcriber | null;
-  voicebox: Transcriber;
+  local: Transcriber;
   log?: (message: string) => void;
 }
 
-/** Which engine actually transcribed the last chunk, for the start-up line
- *  and so a session can tell in hindsight what it was recorded through. */
-export type SttResolved = "groq" | "voicebox";
+/** Which engine actually transcribed the last chunk. */
+export type SttResolved = "groq" | "local";
 
 /**
  * Picks an engine per chunk according to SCRIBE_STT.
  *
- * "auto" tries Voicebox first every time. A refused connection is the only
- * thing that sends a chunk to Groq instead: it costs nothing to find out
- * (the socket fails in microseconds when nothing is listening), and doing it
- * per chunk means opening Voicebox halfway through a lecture moves the rest
- * of it local without a restart, and quitting it moves back to Groq the same
- * way. Any other Voicebox failure propagates, because session.ts already
- * counts a failed chunk and carries on, and silently re-sending audio to the
- * cloud after the user chose local is not a decision this file should make.
+ * "auto" tries local Whisper first every time. Only "unavailable" (sidecar
+ * not running, or still loading its model) sends the chunk to Groq: the check
+ * costs microseconds, and doing it per chunk means the first minute of a
+ * lecture goes to the cloud while the model loads and the rest comes home
+ * without a restart. Any other local failure propagates, because session.ts
+ * already counts a failed chunk and carries on, and quietly re-sending audio
+ * to the cloud after a real local error is not this file's call to make.
  */
 export function createTranscriber(config: Pick<Config, "sttEngine">, deps: SttDeps) {
   const log = deps.log ?? ((m: string) => console.info(`[scribe] ${m}`));
@@ -36,7 +34,7 @@ export function createTranscriber(config: Pick<Config, "sttEngine">, deps: SttDe
 
   function requireGroq(): Transcriber {
     if (!deps.groq) {
-      throw new Error("Voicebox is not running and no GROQ_API_KEY is set to fall back to");
+      throw new Error("local Whisper is unavailable and no GROQ_API_KEY is set to fall back to");
     }
     return deps.groq;
   }
@@ -47,22 +45,22 @@ export function createTranscriber(config: Pick<Config, "sttEngine">, deps: SttDe
         last = "groq";
         return requireGroq().transcribe(input);
       }
-      case "voicebox": {
-        last = "voicebox";
-        return deps.voicebox.transcribe(input);
+      case "local": {
+        last = "local";
+        return deps.local.transcribe(input);
       }
       case "auto": {
         try {
-          const text = await deps.voicebox.transcribe(input);
-          if (last !== "voicebox") log("transcribing locally through Voicebox");
-          last = "voicebox";
+          const text = await deps.local.transcribe(input);
+          if (last !== "local") log("transcribing locally");
+          last = "local";
           announcedFallback = false;
           return text;
         } catch (error) {
-          if (!(error instanceof VoiceboxUnavailable)) throw error;
+          if (!(error instanceof LocalSttUnavailable)) throw error;
           const groq = requireGroq();
           if (!announcedFallback) {
-            log("Voicebox is not running; transcribing through Groq");
+            log(`${error.message}; transcribing through Groq`);
             announcedFallback = true;
           }
           last = "groq";

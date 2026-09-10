@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { loadConfig, type Config } from "./config.js";
 import { Session, restoreLiveSessions, type SessionDeps } from "./session.js";
 import { createGroqClient } from "./groq.js";
-import { createVoiceboxClient } from "./voicebox.js";
+import { createLocalSttClient, createLocalSttSidecar } from "./local-stt.js";
 import { createTranscriber } from "./stt.js";
 import { createSummariser } from "./claude.js";
 import { createLibraryRouter } from "./library-routes.js";
@@ -219,11 +219,21 @@ if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1])))
   });
 
   const config = loadConfig();
-  const voicebox = createVoiceboxClient(config);
+  const local = createLocalSttClient(config);
+  const sidecar = createLocalSttSidecar(config);
   const stt = createTranscriber(config, {
     groq: config.groqApiKey ? createGroqClient(config) : null,
-    voicebox,
+    local,
   });
+  if (config.sttEngine !== "groq") {
+    sidecar.start();
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      process.once(signal, () => {
+        sidecar.stop();
+        process.exit(0);
+      });
+    }
+  }
   const summariser = createSummariser(config);
 
   const deps: SessionDeps = {
@@ -266,18 +276,20 @@ if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1])))
     // on the wifi. Nothing here is meant to leave the machine.
     createApp(config, deps, restoredSessions).listen(config.port, "127.0.0.1", async () => {
       console.log(`[scribe] listening on http://localhost:${config.port}`);
-      // Informational only: the per-chunk decision lives in stt.ts. This just
-      // tells the person opening the app which way the first chunk will go.
-      const local = config.sttEngine !== "groq" && (await voicebox.reachable());
-      if (config.sttEngine === "voicebox" && !local) {
-        console.warn(
-          `[scribe] SCRIBE_STT=voicebox but nothing answers at ${config.voiceboxUrl}; open Voicebox before recording`,
-        );
-      } else {
-        console.log(
-          `[scribe] speech-to-text: ${local ? `Voicebox at ${config.voiceboxUrl} (local)` : "Groq (cloud)"}` +
-            (config.sttEngine === "auto" ? ", re-checked every chunk" : ""),
-        );
+      // Informational only: the per-chunk decision lives in stt.ts.
+      switch (config.sttEngine) {
+        case "groq":
+          console.log("[scribe] speech-to-text: Groq (cloud)");
+          break;
+        case "local":
+          console.log(
+            `[scribe] speech-to-text: local Whisper only (${config.localSttModel}); chunks fail until it is ready`,
+          );
+          break;
+        case "auto":
+          console.log(
+            `[scribe] speech-to-text: local Whisper (${config.localSttModel}) once loaded, Groq until then`,
+          );
       }
     });
   })();

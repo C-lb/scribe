@@ -3,22 +3,24 @@ import os from "node:os";
 
 /**
  * Which speech-to-text engine transcribes chunks.
- * - "auto": Voicebox when it is running on this machine, Groq otherwise,
- *   decided per chunk so starting or quitting Voicebox mid-lecture just works.
- * - "voicebox": local only. No Groq key needed, no cloud fallback.
- * - "groq": cloud only, the pre-Voicebox behaviour.
+ * - "auto": local Whisper once the sidecar has loaded its model, Groq until
+ *   then and whenever the sidecar is down, decided per chunk.
+ * - "local": local only. No Groq key needed, no cloud fallback.
+ * - "groq": cloud only, the original behaviour. The sidecar is not started.
  */
-export type SttEngine = "auto" | "voicebox" | "groq";
+export type SttEngine = "auto" | "local" | "groq";
 
 export interface Config {
-  /** null only when sttEngine is "voicebox": nothing else can run without it. */
+  /** null only when sttEngine is "local": nothing else can run without it. */
   groqApiKey: string | null;
   anthropicApiKey: string;
   sttEngine: SttEngine;
-  /** Base URL of the Voicebox backend. The desktop app listens on 17493. */
-  voiceboxUrl: string;
-  /** Whisper size Voicebox should use; null leaves it to Voicebox's default. */
-  voiceboxModel: string | null;
+  /** Loopback port the Whisper sidecar (stt/whisper_server.py) listens on. */
+  localSttPort: number;
+  /** Derived from localSttPort; the client only ever needs the URL. */
+  localSttUrl: string;
+  /** Hugging Face repo of the MLX Whisper weights the sidecar loads. */
+  localSttModel: string;
   chunkSeconds: number;
   summaryIntervalMinutes: number;
   runningModel: string;
@@ -63,28 +65,23 @@ function bool(env: NodeJS.ProcessEnv, key: string, fallback: boolean): boolean {
 function sttEngine(env: NodeJS.ProcessEnv): SttEngine {
   const raw = (env.SCRIBE_STT ?? "").trim().toLowerCase();
   if (raw === "" || raw === "auto") return "auto";
-  if (raw === "voicebox" || raw === "groq") return raw;
-  throw new Error(
-    `SCRIBE_STT must be auto, voicebox or groq, got ${JSON.stringify(env.SCRIBE_STT)}`,
-  );
+  if (raw === "local" || raw === "groq") return raw;
+  throw new Error(`SCRIBE_STT must be auto, local or groq, got ${JSON.stringify(env.SCRIBE_STT)}`);
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const engine = sttEngine(env);
+  const localSttPort = num(env, "SCRIBE_LOCAL_STT_PORT", 4748);
   return {
-    // "auto" still needs the key: it is the fallback for when Voicebox is not
-    // running, and a lecture is the wrong time to find out there isn't one.
+    // "auto" still needs the key: it is the fallback while the local model
+    // loads, and a lecture is the wrong time to find out there isn't one.
     groqApiKey:
-      engine === "voicebox"
-        ? env.GROQ_API_KEY?.trim() || null
-        : required(env, "GROQ_API_KEY"),
+      engine === "local" ? env.GROQ_API_KEY?.trim() || null : required(env, "GROQ_API_KEY"),
     anthropicApiKey: required(env, "ANTHROPIC_API_KEY"),
     sttEngine: engine,
-    voiceboxUrl: (env.SCRIBE_VOICEBOX_URL?.trim() || "http://127.0.0.1:17493").replace(
-      /\/+$/,
-      "",
-    ),
-    voiceboxModel: env.SCRIBE_VOICEBOX_MODEL?.trim() || null,
+    localSttPort,
+    localSttUrl: `http://127.0.0.1:${localSttPort}`,
+    localSttModel: env.SCRIBE_LOCAL_MODEL?.trim() || "mlx-community/whisper-large-v3-turbo",
     chunkSeconds: num(env, "SCRIBE_CHUNK_SECONDS", 20),
     summaryIntervalMinutes: num(env, "SCRIBE_SUMMARY_INTERVAL_MINUTES", 5),
     runningModel: env.SCRIBE_RUNNING_MODEL?.trim() || "claude-opus-5",

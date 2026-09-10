@@ -15,7 +15,7 @@ cp .env.example .env
 
 Fill in both keys in `.env`:
 
-- `GROQ_API_KEY`: used for speech-to-text when Voicebox is not running (see "Local transcription").
+- `GROQ_API_KEY`: used for speech-to-text until the local model is loaded, or always with `SCRIBE_STT=groq` (see "Local transcription").
 - `ANTHROPIC_API_KEY`: used for the running and final summaries.
 
 `.env` is listed in `.gitignore` and must never be committed.
@@ -104,16 +104,17 @@ Each recording gets its own directory under `~/scribe/sessions/<timestamp>/` (ov
 - `session.json`: whether this session is still recording, plus the counters needed to pick it up again after a restart. Never contains an API key.
 - `running-summary.json`: the most recent running summary, so a restart carries on accumulating rather than starting the summary over.
 
-## Local transcription with Voicebox
+## Local transcription
 
-If [Voicebox](https://github.com/jamiepine/voicebox) is open, Scribe sends each chunk to it instead of Groq. Whisper then runs on this Mac: nothing leaves the machine and there is no per-hour charge. The choice is made per chunk, so opening Voicebox halfway through a lecture moves the rest of it local and quitting it moves back to Groq, with no restart. The start-up log says which way the first chunk will go.
+Scribe can run Whisper on this Mac instead of sending audio to Groq. On start it launches `stt/whisper_server.py` through [uv](https://docs.astral.sh/uv/) with [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper), which runs the model on the GPU via Apple's MLX framework (the same route Voicebox's desktop app takes, without the app). Nothing leaves the machine and there is no per-hour charge.
 
-Two differences from Groq worth knowing:
+The engine is chosen per chunk. While the sidecar is still resolving its environment or loading the model, chunks go to Groq; once it reports ready they go local, with no restart. The start-up log says what will happen, and the sidecar's own lines are forwarded with a `local Whisper:` prefix.
 
-- Voicebox's transcribe endpoint has no bias-prompt field, so the trailing-transcript prompt is not sent. The course term list still corrects the text after it comes back, which is where the drift fix actually lives.
-- Voicebox loads its Whisper model on the first request, so the first chunk of a session can take longer than 20 seconds to appear. Open Voicebox and transcribe anything once before the lecture to warm it up.
+First run costs: uv builds the environment (about a minute) and the model downloads from Hugging Face (`whisper-large-v3-turbo` is about 1.6 GB; `whisper-base-mlx` is under 200 MB and noticeably less accurate). Both are cached after that. Whisper's bias prompt is passed through as `initial_prompt`, so the term list and trailing transcript work the same locally as on Groq.
 
-`SCRIBE_STT=voicebox` makes it local-only and lets you leave `GROQ_API_KEY` empty. `SCRIBE_STT=groq` restores the old behaviour. The cost estimate in `meta.json` still assumes Groq's list price; a Voicebox session's real cost is zero.
+Whisper loop artefacts ("thanks for watching" repeated six times at the end of a quiet chunk, a single word stuck on repeat) are collapsed before a line is written, on both engines. That pass is ported from Voicebox's transcript refinement.
+
+`SCRIBE_STT=local` makes it local-only and lets you leave `GROQ_API_KEY` empty. `SCRIBE_STT=groq` restores the original behaviour and never starts the sidecar. The cost estimate in `meta.json` still assumes Groq's list price; a local session's real cost is zero.
 
 ## Configuration
 
@@ -121,10 +122,10 @@ All of these live in `.env`, with defaults from `.env.example`:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `GROQ_API_KEY` | (required unless `SCRIBE_STT=voicebox`) | Groq API key, used for cloud Whisper transcription and as the fallback in `auto`. |
-| `SCRIBE_STT` | `auto` | Speech-to-text engine. `auto` sends each chunk to Voicebox when it is running on this Mac and to Groq otherwise; `voicebox` is local only; `groq` is cloud only. |
-| `SCRIBE_VOICEBOX_URL` | `http://127.0.0.1:17493` | Where the Voicebox desktop app's backend listens. |
-| `SCRIBE_VOICEBOX_MODEL` | (unset) | Whisper size Voicebox should use, e.g. `whisper-turbo`. Unset uses Voicebox's own default. |
+| `GROQ_API_KEY` | (required unless `SCRIBE_STT=local`) | Groq API key, used for cloud Whisper transcription and as the fallback in `auto`. |
+| `SCRIBE_STT` | `auto` | Speech-to-text engine. `auto` sends each chunk to local Whisper once it is loaded and to Groq until then; `local` is local only; `groq` is cloud only. |
+| `SCRIBE_LOCAL_STT_PORT` | `4748` | Loopback port the Whisper sidecar listens on. |
+| `SCRIBE_LOCAL_MODEL` | `mlx-community/whisper-large-v3-turbo` | Hugging Face repo of the MLX Whisper weights the sidecar loads. |
 | `ANTHROPIC_API_KEY` | (required) | Anthropic API key, used for summarisation. |
 | `SCRIBE_CHUNK_SECONDS` | `20` | Target length of each audio chunk before it's sent for transcription. |
 | `SCRIBE_SUMMARY_INTERVAL_MINUTES` | `5` | How often the running summary is regenerated. |
