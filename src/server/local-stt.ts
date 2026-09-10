@@ -157,5 +157,9 @@ export function createLocalSttSidecar(
     child = null;
   }
 
+  // Belt and braces with the sidecar's own parent watchdog: whatever path
+  // this process leaves by, the child gets a SIGTERM on the way out.
+  process.once("exit", stop);
+
   return { start, stop, running: () => child !== null };
 }

@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import sys
 import threading
 import time
@@ -75,6 +76,19 @@ def transcribe(samples: np.ndarray, language: str | None, prompt: str | None) ->
         fp16=True,
     )
     return (result.get("text") or "").strip()
+
+
+def watch_parent() -> None:
+    """Exit when the Scribe server that spawned us is gone. `tsx watch`
+    restarts the server on every file change and does not always get to run
+    its shutdown handlers first; without this, each restart would leave one
+    more idle Whisper process holding a port and a model in memory."""
+    parent = os.getppid()
+    while True:
+        time.sleep(2)
+        if os.getppid() != parent:
+            log("parent server gone; exiting")
+            os._exit(0)
 
 
 def warm_up() -> None:
@@ -147,6 +161,7 @@ def main() -> None:
     args = parser.parse_args()
     state["model"] = args.model
 
+    threading.Thread(target=watch_parent, daemon=True).start()
     threading.Thread(target=warm_up, daemon=True).start()
     server = HTTPServer(("127.0.0.1", args.port), Handler)
     log(f"listening on http://127.0.0.1:{args.port}")
