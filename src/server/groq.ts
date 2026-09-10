@@ -11,6 +11,14 @@ export interface TranscribeInput {
 }
 
 export function createGroqClient(config: Config) {
+  const apiKey = config.groqApiKey;
+  if (!apiKey) {
+    // Only reachable with SCRIBE_STT=voicebox and no key. The chooser never
+    // asks for a Groq client in that mode, so this is a wiring bug, not a
+    // user error, and it should fail at start-up rather than mid-lecture.
+    throw new Error("createGroqClient called without a GROQ_API_KEY");
+  }
+
   async function once(input: TranscribeInput): Promise<string> {
     const form = new FormData();
     form.append(
@@ -38,7 +46,7 @@ export function createGroqClient(config: Config) {
 
     const response = await fetch(ENDPOINT, {
       method: "POST",
-      headers: { Authorization: `Bearer ${config.groqApiKey}` },
+      headers: { Authorization: `Bearer ${apiKey}` },
       body: form,
     });
 

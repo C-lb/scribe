@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { loadConfig, type Config } from "./config.js";
 import { Session, restoreLiveSessions, type SessionDeps } from "./session.js";
 import { createGroqClient } from "./groq.js";
+import { createVoiceboxClient } from "./voicebox.js";
+import { createTranscriber } from "./stt.js";
 import { createSummariser } from "./claude.js";
 import { createLibraryRouter } from "./library-routes.js";
 import { createAudioRouter } from "./audio-routes.js";
@@ -217,11 +219,15 @@ if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1])))
   });
 
   const config = loadConfig();
-  const groq = createGroqClient(config);
+  const voicebox = createVoiceboxClient(config);
+  const stt = createTranscriber(config, {
+    groq: config.groqApiKey ? createGroqClient(config) : null,
+    voicebox,
+  });
   const summariser = createSummariser(config);
 
   const deps: SessionDeps = {
-    transcribe: (input) => groq.transcribe(input),
+    transcribe: (input) => stt.transcribe(input),
     running: (transcript, previous) => summariser.running(transcript, previous),
     final: (transcript) => summariser.final(transcript),
   };
@@ -258,8 +264,21 @@ if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1])))
     // that asks the OS to open a folder. Express's default binds every
     // interface, which on a café network hands all of that to whoever else is
     // on the wifi. Nothing here is meant to leave the machine.
-    createApp(config, deps, restoredSessions).listen(config.port, "127.0.0.1", () => {
+    createApp(config, deps, restoredSessions).listen(config.port, "127.0.0.1", async () => {
       console.log(`[scribe] listening on http://localhost:${config.port}`);
+      // Informational only: the per-chunk decision lives in stt.ts. This just
+      // tells the person opening the app which way the first chunk will go.
+      const local = config.sttEngine !== "groq" && (await voicebox.reachable());
+      if (config.sttEngine === "voicebox" && !local) {
+        console.warn(
+          `[scribe] SCRIBE_STT=voicebox but nothing answers at ${config.voiceboxUrl}; open Voicebox before recording`,
+        );
+      } else {
+        console.log(
+          `[scribe] speech-to-text: ${local ? `Voicebox at ${config.voiceboxUrl} (local)` : "Groq (cloud)"}` +
+            (config.sttEngine === "auto" ? ", re-checked every chunk" : ""),
+        );
+      }
     });
   })();
 }

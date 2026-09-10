@@ -1,9 +1,24 @@
 import path from "node:path";
 import os from "node:os";
 
+/**
+ * Which speech-to-text engine transcribes chunks.
+ * - "auto": Voicebox when it is running on this machine, Groq otherwise,
+ *   decided per chunk so starting or quitting Voicebox mid-lecture just works.
+ * - "voicebox": local only. No Groq key needed, no cloud fallback.
+ * - "groq": cloud only, the pre-Voicebox behaviour.
+ */
+export type SttEngine = "auto" | "voicebox" | "groq";
+
 export interface Config {
-  groqApiKey: string;
+  /** null only when sttEngine is "voicebox": nothing else can run without it. */
+  groqApiKey: string | null;
   anthropicApiKey: string;
+  sttEngine: SttEngine;
+  /** Base URL of the Voicebox backend. The desktop app listens on 17493. */
+  voiceboxUrl: string;
+  /** Whisper size Voicebox should use; null leaves it to Voicebox's default. */
+  voiceboxModel: string | null;
   chunkSeconds: number;
   summaryIntervalMinutes: number;
   runningModel: string;
@@ -45,10 +60,31 @@ function bool(env: NodeJS.ProcessEnv, key: string, fallback: boolean): boolean {
   return raw.toLowerCase() !== "false" && raw !== "0";
 }
 
+function sttEngine(env: NodeJS.ProcessEnv): SttEngine {
+  const raw = (env.SCRIBE_STT ?? "").trim().toLowerCase();
+  if (raw === "" || raw === "auto") return "auto";
+  if (raw === "voicebox" || raw === "groq") return raw;
+  throw new Error(
+    `SCRIBE_STT must be auto, voicebox or groq, got ${JSON.stringify(env.SCRIBE_STT)}`,
+  );
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const engine = sttEngine(env);
   return {
-    groqApiKey: required(env, "GROQ_API_KEY"),
+    // "auto" still needs the key: it is the fallback for when Voicebox is not
+    // running, and a lecture is the wrong time to find out there isn't one.
+    groqApiKey:
+      engine === "voicebox"
+        ? env.GROQ_API_KEY?.trim() || null
+        : required(env, "GROQ_API_KEY"),
     anthropicApiKey: required(env, "ANTHROPIC_API_KEY"),
+    sttEngine: engine,
+    voiceboxUrl: (env.SCRIBE_VOICEBOX_URL?.trim() || "http://127.0.0.1:17493").replace(
+      /\/+$/,
+      "",
+    ),
+    voiceboxModel: env.SCRIBE_VOICEBOX_MODEL?.trim() || null,
     chunkSeconds: num(env, "SCRIBE_CHUNK_SECONDS", 20),
     summaryIntervalMinutes: num(env, "SCRIBE_SUMMARY_INTERVAL_MINUTES", 5),
     runningModel: env.SCRIBE_RUNNING_MODEL?.trim() || "claude-opus-5",
